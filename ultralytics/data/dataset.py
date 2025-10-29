@@ -1237,36 +1237,3 @@ class SiamDataset(YOLODataset):
         if "img" in collated and "query_img" not in collated:
             collated["query_img"] = collated["img"]
         return collated
-
-    @staticmethod
-    def collate_fn(batch: list[dict]) -> dict:
-        """
-        Collate Siamese data samples into batches.
-
-        Args:
-            batch (list[dict]): List of sample dictionaries.
-
-        Returns:
-            (dict): Collated batch with 'query_img', 'support_img', and other data.
-        """
-        new_batch = {}
-        batch = [dict(sorted(b.items())) for b in batch]
-        keys = batch[0].keys()
-        values = list(zip(*[list(b.values()) for b in batch]))
-
-        for i, k in enumerate(keys):
-            value = values[i]
-            if k in {"query_img", "support_img", "img"}:
-                value = torch.stack(value, 0)
-            elif k == "visuals":
-                value = torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
-            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
-                value = torch.cat(value, 0)
-            new_batch[k] = value
-
-        new_batch["batch_idx"] = list(new_batch.get("batch_idx", []))
-        for i in range(len(new_batch["batch_idx"])):
-            new_batch["batch_idx"][i] += i
-        new_batch["batch_idx"] = torch.cat(new_batch["batch_idx"], 0) if new_batch["batch_idx"] else torch.tensor([])
-
-        return new_batch
