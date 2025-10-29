@@ -178,19 +178,20 @@ def move_single_triplet(args):
     """
     Move a single triplet's files from staging to final location.
     Creates proper triplet format line.
-    Note: Support image copying is handled separately to avoid race conditions on Windows.
+    Note: Support images are already copied to final location.
+    This function only needs to move the query image and compute relative paths.
     """
-    q_stage_path, s_stage_paths, bboxes, is_positive, query_out_dir, support_out_dir, base_out_dir = args
+    q_stage_path, s_stage_names, bboxes, is_positive, query_out_dir, support_out_dir, base_out_dir = args
     
     # 1. Move Query Image
     q_final_path = query_out_dir / q_stage_path.name
     shutil.move(str(q_stage_path), str(q_final_path))
     q_rel_path = q_final_path.relative_to(base_out_dir)
 
-    # 2. Get support image paths (they will be copied separately to avoid race conditions)
+    # 2. Get support image relative paths (files already exist in support_out_dir)
     s_rel_paths = []
-    for s_stage_path in s_stage_paths:
-        s_final_path = support_out_dir / s_stage_path.name
+    for s_name in s_stage_names:
+        s_final_path = support_out_dir / s_name
         s_rel_paths.append(str(s_final_path.relative_to(base_out_dir)))
 
     # 3. Format triplet line: query_path support1_path support2_path support3_path [bboxes...]
@@ -211,14 +212,17 @@ def move_files_and_write_triplets(
 ):
     """
     Moves files from staging to final dir, creates triplet format lines.
-    Uses parallel processing for query file operations only.
-    Support files are copied sequentially to avoid race conditions on Windows.
     
     Creates proper directory structure:
     - images/{train,val}/{query,support}/ for images
     - images/{train,val}/labels/ for label files
     
     Triplet format: <query_path> <support_path1> <support_path2> <support_path3> [<class> <x> <y> <w> <h> ...]
+    
+    Process:
+    1. Copy all unique support images first (sequentially to avoid Windows file locks)
+    2. Move query files in parallel and generate triplet lines
+    3. Write triplet lines to label file
     """
     if num_workers is None:
         num_workers = max(1, cpu_count() - 1)
@@ -234,24 +238,22 @@ def move_files_and_write_triplets(
     
     # --- Step 1: Copy all unique support images SEQUENTIALLY (avoid Windows file lock issues) ---
     print(f"Copying support images for {img_set}...")
-    copied_support_files = set()
-    all_unique_support_paths = set()
+    all_unique_support_items = set()
     
     for (q_stage_path, s_stage_paths, bboxes, is_positive) in triplet_data_list:
         for s_stage_path in s_stage_paths:
-            all_unique_support_paths.add(s_stage_path)
+            all_unique_support_items.add(s_stage_path)
     
-    for s_stage_path in all_unique_support_paths:
+    for s_stage_path in all_unique_support_items:
         s_final_path = support_out_dir / s_stage_path.name
         if not s_final_path.exists():
             shutil.copy2(str(s_stage_path), str(s_final_path))
-        copied_support_files.add(s_stage_path.name)
     
     # --- Step 2: Move query files and generate triplet lines IN PARALLEL ---
     # Prepare arguments for each triplet
-    # triplet_data_list contains tuples: (q_path, s_paths, bboxes, is_positive)
+    # Now we only pass the support image filenames (not paths), since files are already copied
     args_list = [
-        (q_stage_path, s_stage_paths, bboxes, is_positive, query_out_dir, support_out_dir, base_out_dir)
+        (q_stage_path, [s_stage_path.name for s_stage_path in s_stage_paths], bboxes, is_positive, query_out_dir, support_out_dir, base_out_dir)
         for (q_stage_path, s_stage_paths, bboxes, is_positive) in triplet_data_list
     ]
     
