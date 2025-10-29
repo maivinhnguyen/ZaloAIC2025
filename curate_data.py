@@ -181,25 +181,25 @@ def move_single_triplet(args):
     Note: Support images are already copied to final location.
     This function only needs to move the query image and compute relative paths.
     
-    Paths are computed relative to the query directory so that when label files
-    are loaded by the dataset class, the paths resolve correctly.
+    Paths are computed relative to the dataset root (images/ directory) so that when 
+    label files are loaded by the dataset class with _resolve_dataset_path, they resolve correctly.
+    The dataset root is determined by going up 2 levels from the label file.
     """
-    q_stage_path, s_stage_names, bboxes, is_positive, query_out_dir, support_out_dir = args
+    q_stage_path, s_stage_names, bboxes, is_positive, query_out_dir, support_out_dir, img_out_root = args
     
     # 1. Move Query Image
     q_final_path = query_out_dir / q_stage_path.name
     shutil.move(str(q_stage_path), str(q_final_path))
     
-    # Compute paths relative to query_out_dir (where label file reader starts)
-    # Use os.path.relpath to handle sibling directories correctly
-    q_rel_path = os.path.relpath(q_final_path, query_out_dir)
+    # Compute paths relative to img_out_root (images/ directory)
+    # Use os.path.relpath to handle directory navigation correctly
+    q_rel_path = os.path.relpath(q_final_path, img_out_root)
 
-    # 2. Get support image relative paths (relative to query_out_dir)
-    # Support images are in ../support/ relative to query dir
+    # 2. Get support image relative paths (relative to img_out_root)
     s_rel_paths = []
     for s_name in s_stage_names:
         s_final_path = support_out_dir / s_name
-        s_rel_path = os.path.relpath(s_final_path, query_out_dir)
+        s_rel_path = os.path.relpath(s_final_path, img_out_root)
         s_rel_paths.append(str(s_rel_path))
 
     # 3. Format triplet line: query_path support1_path support2_path support3_path [bboxes...]
@@ -260,8 +260,10 @@ def move_files_and_write_triplets(
     # --- Step 2: Move query files and generate triplet lines IN PARALLEL ---
     # Prepare arguments for each triplet
     # Now we only pass the support image filenames (not paths), since files are already copied
+    # img_out_root is "images/" directory - the dataset root level
+    img_out_root = base_out_dir / "images"
     args_list = [
-        (q_stage_path, [s_stage_path.name for s_stage_path in s_stage_paths], bboxes, is_positive, query_out_dir, support_out_dir)
+        (q_stage_path, [s_stage_path.name for s_stage_path in s_stage_paths], bboxes, is_positive, query_out_dir, support_out_dir, img_out_root)
         for (q_stage_path, s_stage_paths, bboxes, is_positive) in triplet_data_list
     ]
     
