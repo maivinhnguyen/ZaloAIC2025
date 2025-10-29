@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from collections import defaultdict
 from copy import deepcopy
 from itertools import repeat
@@ -157,6 +158,67 @@ class YOLODataset(BaseDataset):
         x["msgs"] = msgs  # warnings
         save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
         return x
+
+    @staticmethod
+    def _capture_rng_state() -> dict[str, Any]:
+        """Capture the RNG state for Python, NumPy, Torch, and CUDA (if available)."""
+        state = {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.get_rng_state(),
+        }
+        if torch.cuda.is_available():
+            state["cuda"] = torch.cuda.get_rng_state_all()
+        return state
+
+    @staticmethod
+    def _restore_rng_state(state: dict[str, Any]) -> None:
+        """Restore previously captured RNG state."""
+        random.setstate(state["python"])
+        np.random.set_state(state["numpy"])
+        torch.set_rng_state(state["torch"])
+        if "cuda" in state and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(state["cuda"])
+
+    def _resolve_dataset_path(self, path_value: str | Path, dataset_root: Path | None = None) -> Path:
+        """Resolve dataset-relative paths to absolute paths."""
+        path = Path(path_value)
+        if path.is_absolute():
+            return path.resolve()
+
+        root = dataset_root if dataset_root is not None else getattr(self, "dataset_root", None)
+        if root is None:
+            if self.label_files:
+                root = Path(self.label_files[0]).parent.parent
+            else:
+                root = Path.cwd()
+        return (Path(root).resolve() / path).resolve()
+
+    def _load_support_image(self, support_file: str | None, fallback: np.ndarray) -> np.ndarray:
+        """Load the support image if available; otherwise return a copy of the fallback image."""
+        if not support_file:
+            return fallback.copy()
+
+        support_path = self._resolve_dataset_path(support_file)
+        cache_key = str(support_path)
+
+        if cache_key in self.support_images_cache:
+            return self.support_images_cache[cache_key].copy()
+
+        if not support_path.exists():
+            return fallback.copy()
+
+        flag = getattr(self, "cv2_flag", cv2.IMREAD_COLOR)
+        img = cv2.imread(str(support_path), flag if flag is not None else cv2.IMREAD_COLOR)
+        if img is None:
+            return fallback.copy()
+
+        if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+        img = np.ascontiguousarray(img)
+        self.support_images_cache[cache_key] = img
+        return img.copy()
 
     def get_labels(self) -> list[dict]:
         """
@@ -902,6 +964,7 @@ class SiamDataset(YOLODataset):
         """
         self.support_images_cache = {}
         self.transform_seed = None
+        self.dataset_root = None
         super().__init__(*args, data=data, task=task, **kwargs)
 
     def get_labels(self) -> list[dict]:
@@ -915,8 +978,40 @@ class SiamDataset(YOLODataset):
             (list[dict]): List of label dictionaries, each containing query_image, support_image,
                          and annotation information.
         """
-        self.label_files = img2label_paths(self.im_files)
-        cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
+        img_path = Path(self.img_path)
+        candidate_root = img_path.parents[2] if len(img_path.parents) >= 3 else img_path.parent
+        label_dir = (candidate_root / "labels").resolve()
+        if not label_dir.exists():
+            fallback_dir = (img_path.parent / "labels").resolve()
+            if fallback_dir.exists():
+                label_dir = fallback_dir
+                candidate_root = label_dir.parent
+            else:
+                raise FileNotFoundError(f"Labels directory not found for Siamese dataset under {img_path}")
+
+        self.dataset_root = candidate_root.resolve()
+
+        split_candidates = {"train": "train.txt", "val": "val.txt", "test": "test.txt"}
+        img_path_lower = str(self.img_path).lower()
+        selected_split = "train"
+        for split_name in ("train", "val", "test"):
+            if split_name in img_path_lower:
+                selected_split = split_name
+                break
+
+        label_file = label_dir / split_candidates[selected_split]
+        if not label_file.exists():
+            fallback_file = label_dir / split_candidates["train"]
+            if fallback_file.exists():
+                LOGGER.warning(
+                    f"{self.prefix}Label file {label_file} not found. Falling back to {fallback_file.name}."
+                )
+                label_file = fallback_file
+            else:
+                raise FileNotFoundError(f"Label file not found: {label_file}")
+
+        self.label_files = [str(label_file)] * max(len(self.im_files), 1)
+        cache_path = label_dir / ".cache"
 
         try:
             cache, exists = load_dataset_cache_file(cache_path), True
@@ -940,7 +1035,8 @@ class SiamDataset(YOLODataset):
             )
 
         # For Siamese dataset, we may need to adjust im_files
-        self.im_files = [lb["im_file"] for lb in labels]
+        # Ensure all im_files are strings, not Path objects
+        self.im_files = [str(lb["im_file"]) for lb in labels]
         return labels
 
     def cache_labels_siam(self, path: Path = Path("./labels_siam.cache")) -> dict:
@@ -955,130 +1051,127 @@ class SiamDataset(YOLODataset):
         """
         x = {"labels": []}
         nm, nf, ne, nc, msgs = 0, 0, 0, 0, []
-        desc = f"{self.prefix}Scanning Siamese {path.parent / path.stem}..."
-        total = len(self.im_files)
+        label_file = self.label_files[0] if self.label_files else None
 
-        with ThreadPool(NUM_THREADS) as pool:
-            results = pool.imap(
-                func=self._verify_siam_label,
-                iterable=zip(self.im_files, self.label_files, repeat(self.prefix)),
-            )
-            pbar = TQDM(results, desc=desc, total=total)
-            for im_file, support_file, shape, cls_label, bboxes, nm_f, nf_f, ne_f, nc_f, msg in pbar:
-                nm += nm_f
-                nf += nf_f
-                ne += ne_f
-                nc += nc_f
-                if im_file:
-                    x["labels"].append(
-                        {
-                            "im_file": im_file,
-                            "support_file": support_file,
-                            "shape": shape,
-                            "cls": cls_label,
-                            "bboxes": bboxes,
-                            "normalized": True,
-                            "bbox_format": "xywh",
-                        }
-                    )
-                if msg:
+        if not label_file or not Path(label_file).exists():
+            LOGGER.warning(f"{self.prefix}Label file not found: {label_file}")
+            label_files_str = [str(lf) for lf in self.label_files]
+            im_files_str = [str(im) for im in self.im_files]
+            x["hash"] = get_hash(label_files_str + im_files_str)
+            x["results"] = nf, nm, ne, nc, len(self.im_files)
+            x["msgs"] = msgs
+            return x
+
+        dataset_root = Path(getattr(self, "dataset_root", Path(label_file).parent.parent)).resolve()
+        triplet_data: dict[str, dict[str, Any]] = {}
+
+        try:
+            with open(label_file, encoding="utf-8", errors="ignore") as lf:
+                for line_idx, raw_line in enumerate(lf):
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+
+                    parts = line.split()
+                    if len(parts) < 2:
+                        msgs.append(
+                            f"{self.prefix}Skipping malformed line {line_idx} in {label_file}: '{raw_line.strip()}'"
+                        )
+                        continue
+
+                    query_token, support_token = parts[0], parts[1]
+                    query_path = self._resolve_dataset_path(query_token, dataset_root)
+                    support_path = None
+                    if support_token.lower() not in {"", "none", "null"}:
+                        candidate_support = self._resolve_dataset_path(support_token, dataset_root)
+                        if candidate_support.exists():
+                            support_path = candidate_support
+                        else:
+                            msgs.append(
+                                f"{self.prefix}Support image missing for {query_path}: {candidate_support}"
+                            )
+
+                    triplet_data[str(query_path)] = {
+                        "support": str(support_path) if support_path else None,
+                        "boxes": parts[2:] if len(parts) > 2 else [],
+                    }
+        except Exception as exc:
+            LOGGER.warning(f"{self.prefix}Error reading label file {label_file}: {exc}")
+
+        for im_file in self.im_files:
+            im_path = Path(im_file).resolve()
+            triplet_info = triplet_data.get(str(im_path))
+            if triplet_info is None:
+                nm += 1
+                triplet_info = {"support": None, "boxes": []}
+
+            support_file = triplet_info.get("support")
+            boxes_data = triplet_info.get("boxes", [])
+
+            try:
+                with Image.open(str(im_path)) as img:
+                    img.verify()
+                with Image.open(str(im_path)) as img:
+                    shape = (img.height, img.width)
+                assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
+
+                classes, bboxes = [], []
+                for i in range(0, len(boxes_data), 5):
+                    if i + 4 >= len(boxes_data):
+                        ne += 1
+                        continue
+                    try:
+                        classes.append(float(boxes_data[i]))
+                        bboxes.append(
+                            [
+                                float(boxes_data[i + 1]),
+                                float(boxes_data[i + 2]),
+                                float(boxes_data[i + 3]),
+                                float(boxes_data[i + 4]),
+                            ]
+                        )
+                    except (TypeError, ValueError):
+                        ne += 1
+
+                if bboxes:
+                    cls = np.array(classes, dtype=np.float32).reshape(-1, 1)
+                    bboxes_arr = np.array(bboxes, dtype=np.float32)
+                else:
+                    cls = np.zeros((0, 1), dtype=np.float32)
+                    bboxes_arr = np.zeros((0, 4), dtype=np.float32)
+
+                nf += 1
+                x["labels"].append(
+                    {
+                        "im_file": str(im_path),
+                        "support_file": support_file,
+                        "shape": shape,
+                        "cls": cls,
+                        "bboxes": bboxes_arr,
+                        "segments": [],
+                        "keypoints": None,
+                        "normalized": True,
+                        "bbox_format": "xywh",
+                    }
+                )
+            except Exception as exc:
+                ne += 1
+                msg = f"{self.prefix}WARNING ⚠️ {im_path}: ignoring corrupted image: {exc}"
+                if msg not in msgs:
                     msgs.append(msg)
-                pbar.desc = f"{desc} {nf} images, {nm + ne} backgrounds, {nc} corrupt"
-            pbar.close()
 
         if msgs:
             LOGGER.info("\n".join(msgs))
         if nf == 0:
-            LOGGER.warning(f"{self.prefix}No labels found in Siamese format. {HELP_URL}")
+            LOGGER.warning(f"{self.prefix}No valid images found in Siamese dataset. {HELP_URL}")
 
-        x["hash"] = get_hash(self.label_files + self.im_files)
+        label_files_str = [str(lf) for lf in self.label_files]
+        im_files_str = [str(Path(im).resolve()) for im in self.im_files]
+        x["hash"] = get_hash(label_files_str + im_files_str)
         x["results"] = nf, nm, ne, nc, len(self.im_files)
         x["msgs"] = msgs
         save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
         return x
-
-    @staticmethod
-    def _verify_siam_label(args):
-        """
-        Verify a single Siamese label file and image pair.
-
-        Args:
-            args: Tuple of (im_file, label_file, prefix)
-
-        Returns:
-            Tuple containing verification results.
-        """
-        im_file, lb_file, prefix = args
-        nm, nf, ne, nc, msg = 0, 0, 1, 0, ""
-
-        try:
-            im = Image.open(im_file)
-            im.verify()
-            shape = (im.height, im.width)
-            assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
-            assert im.format.lower() in {"jpeg", "jpg", "png"}, f"invalid image format {im.format}"
-            if im.format.lower() in {"jpeg", "jpg"}:
-                with open(im_file, "rb") as f:
-                    is_jfif = b"JFIF" in f.peek(10)
-        except Exception as e:
-            msg = f"{prefix}WARNING ⚠️ {im_file}: ignoring corrupted image/label: {e}"
-            return (
-                im_file if not msg else None,
-                None,
-                shape if msg == "" else (0, 0),
-                np.zeros((0, 1), dtype=np.float32),
-                np.zeros((0, 4), dtype=np.float32),
-                nm,
-                nf,
-                ne,
-                nc,
-                msg,
-            )
-
-        try:
-            # Each line: query_img support_img cls1 x1 y1 w1 h1 cls2 x2 y2 w2 h2 ...
-            with open(lb_file, encoding="utf-8", errors="ignore") as f:
-                lb = [x.split() for x in f.readlines()]
-
-            if len(lb) > 0:
-                # First two items are image paths, rest are annotations
-                support_file = lb[0][1] if len(lb[0]) > 1 else None
-                annotation_data = lb[0][2:] if len(lb[0]) > 2 else []
-
-                # Parse bounding boxes and classes
-                classes = []
-                bboxes = []
-                for i in range(0, len(annotation_data), 5):
-                    if i + 4 < len(annotation_data):
-                        classes.append(float(annotation_data[i]))
-                        bboxes.append([float(annotation_data[i + 1]), float(annotation_data[i + 2]),
-                                      float(annotation_data[i + 3]), float(annotation_data[i + 4])])
-
-                if len(bboxes) > 0:
-                    cls = np.array(classes, dtype=np.float32).reshape(-1, 1)
-                    bboxes = np.array(bboxes, dtype=np.float32)
-                    nf = 1
-                    ne = 0
-                else:
-                    cls = np.zeros((0, 1), dtype=np.float32)
-                    bboxes = np.zeros((0, 4), dtype=np.float32)
-                    nf = 1
-                    ne = 0
-            else:
-                cls = np.zeros((0, 1), dtype=np.float32)
-                bboxes = np.zeros((0, 4), dtype=np.float32)
-                support_file = None
-                nf = 1
-                ne = 0
-
-        except Exception as e:
-            msg = f"{prefix}WARNING ⚠️ {lb_file}: ignoring corrupted label: {e}"
-            cls = np.zeros((0, 1), dtype=np.float32)
-            bboxes = np.zeros((0, 4), dtype=np.float32)
-            support_file = None
-            ne = 1
-
-        return im_file, support_file, shape, cls, bboxes, nm, nf, ne, nc, msg
 
     def __getitem__(self, index: int) -> dict:
         """
@@ -1090,51 +1183,60 @@ class SiamDataset(YOLODataset):
         Returns:
             (dict): Dictionary containing 'query_img', 'support_img', and label information.
         """
-        label = deepcopy(self.labels[index])
-        label.pop("pop", None)
+        raw_label = deepcopy(self.labels[index])
+        raw_label.pop("shape", None)
 
-        # Get query image
-        query_img = self.load_image(index)
+        query_img, ori_shape, resized_shape = self.load_image(index)
+        query_img = np.ascontiguousarray(query_img)
 
-        # Get support image
-        support_file = label.get("support_file")
-        if support_file:
-            if support_file in self.support_images_cache:
-                support_img = self.support_images_cache[support_file]
-            else:
-                support_path = Path(support_file)
-                if not support_path.is_absolute():
-                    support_path = Path(self.im_files[0]).parent / support_file
-                support_img = cv2.imread(str(support_path))
-                if support_img is not None:
-                    support_img = cv2.cvtColor(support_img, cv2.COLOR_BGR2RGB)
-                    self.support_images_cache[support_file] = support_img
-        else:
-            # If no support image, use the query image itself
-            support_img = query_img.copy()
+        raw_label["img"] = query_img.copy()
+        raw_label["ori_shape"] = ori_shape
+        raw_label["resized_shape"] = resized_shape
+        raw_label["ratio_pad"] = (
+            resized_shape[0] / ori_shape[0],
+            resized_shape[1] / ori_shape[1],
+        )
+        if self.rect:
+            raw_label["rect_shape"] = self.batch_shapes[self.batch[index]]
 
-        # Update labels
-        label = self.update_labels_info(label)
+        label = self.update_labels_info(raw_label)
 
-        # Apply same transforms to both query and support images
-        # This ensures geometric consistency between the two images
+        support_img = self._load_support_image(label.get("support_file"), label["img"])
+        support_label = deepcopy(label)
+        support_label["img"] = np.ascontiguousarray(support_img.copy())
+        support_label["ori_shape"] = support_img.shape[:2]
+        support_label["resized_shape"] = support_img.shape[:2]
+        support_label["ratio_pad"] = (1.0, 1.0)
+
         if self.transforms:
-            # Store the transform seed for reproducibility
-            torch.manual_seed(index)
-            data_query = self.transforms(img=query_img, cls=label["instances"].cls, bboxes=label["instances"].bboxes,
-                                        segments=label["instances"].segments)
-            torch.manual_seed(index)
-            data_support = self.transforms(img=support_img, cls=label["instances"].cls,
-                                          bboxes=label["instances"].bboxes, segments=label["instances"].segments)
+            rng_state_before = self._capture_rng_state()
+            query_data = self.transforms(deepcopy(label))
+            rng_state_after_query = self._capture_rng_state()
+            self._restore_rng_state(rng_state_before)
+            support_data = self.transforms(deepcopy(support_label))
+            self._restore_rng_state(rng_state_after_query)
+        else:
+            query_data = deepcopy(label)
+            support_data = deepcopy(support_label)
+            query_data["img"] = torch.from_numpy(query_data["img"].transpose(2, 0, 1))
+            support_data["img"] = torch.from_numpy(support_data["img"].transpose(2, 0, 1))
 
-            query_img = data_query["img"]
-            support_img = data_support["img"]
-            label["instances"] = data_query["instances"]
+        output = query_data
+        output["support_img"] = support_data["img"]
+        output["support_file"] = support_data.get("support_file", label.get("support_file"))
+        return output
 
-        # Return both query and support images
-        data = {"query_img": query_img, "support_img": support_img}
-        data.update(label)
-        return data
+    @staticmethod
+    def collate_fn(batch: list[dict]) -> dict:
+        """Collate Siamese samples, stacking support images alongside standard YOLO tensors."""
+        collated = YOLODataset.collate_fn(batch)
+        if "support_img" in collated:
+            support_imgs = collated["support_img"]
+            if isinstance(support_imgs, (list, tuple)):
+                collated["support_img"] = torch.stack(list(support_imgs), 0)
+        if "img" in collated and "query_img" not in collated:
+            collated["query_img"] = collated["img"]
+        return collated
 
     @staticmethod
     def collate_fn(batch: list[dict]) -> dict:

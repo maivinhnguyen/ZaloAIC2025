@@ -46,26 +46,34 @@ def example_siam_detection_model():
     print("Example 2: SiamDetectionModel")
     print("=" * 60)
 
-    # Initialize model
-    model = SiamDetectionModel("yolo11n.yaml", ch=3, nc=1, verbose=False)
+    try:
+        # Initialize model
+        model = SiamDetectionModel("yolo11n.yaml", ch=3, nc=1, verbose=False)
 
-    # Create sample images
-    batch_size = 2
-    channels = 3
-    height = width = 640
+        # Create sample images
+        batch_size = 2
+        channels = 3
+        height = width = 640
 
-    query_img = torch.randn(batch_size, channels, height, width)
-    support_img = torch.randn(batch_size, channels, height, width)
+        query_img = torch.randn(batch_size, channels, height, width)
+        support_img = torch.randn(batch_size, channels, height, width)
 
-    # Forward pass
-    model.eval()
-    with torch.no_grad():
-        outputs = model(query_img, support_img)
+        # Forward pass with both query and support images
+        model.eval()
+        with torch.no_grad():
+            # Pass support_img as keyword argument
+            outputs = model(query_img, support_img=support_img)
 
-    print(f"Query image shape: {query_img.shape}")
-    print(f"Support image shape: {support_img.shape}")
-    print(f"Model output type: {type(outputs)}")
-    print(f"✓ Model inference successful!\n")
+        print(f"Query image shape: {query_img.shape}")
+        print(f"Support image shape: {support_img.shape}")
+        print(f"Model output type: {type(outputs)}")
+        print(f"✓ Model inference successful!\n")
+    
+    except Exception as e:
+        print(f"✗ Error in SiamDetectionModel: {e}")
+        import traceback
+        traceback.print_exc()
+        print()
 
 
 # Example 3: Computing SiamLoss

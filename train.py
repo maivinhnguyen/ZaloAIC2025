@@ -1,0 +1,33 @@
+from ultralytics.models.siam_train import SiamDetectionTrainer
+import argparse
+
+def train(data, model, epochs, imgsz, batch, device):
+    trainer = SiamDetectionTrainer(overrides={
+        'model': model,
+        'data': data,
+        'epochs': epochs,
+        'imgsz': imgsz,
+        'batch': batch,
+        'device': device,
+        'workers': 4,
+    })
+
+    results = trainer.train()
+
+def main():
+    parser = argparse.ArgumentParser(description='Train SIAM detection model')
+    parser.add_argument('--data', type=str, default='siam_coco.yaml', help='Path to dataset YAML file')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--imgsz', type=int, default=640, help='Input image size')
+    parser.add_argument('--batch', type=int, default=16, help='Batch size')
+    parser.add_argument('--device', type=int, default=0, help='GPU device ID')
+    parser.add_argument('--model', type=str, default='yolo11n.yaml', help='Model configuration file')
+
+    args = parser.parse_args()
+    train(data=args.data, model=args.model, epochs=args.epochs, 
+          imgsz=args.imgsz, batch=args.batch, device=args.device)
+
+if __name__ == '__main__':
+    main()
+
+

@@ -1,7 +1,0 @@
-
-path: C:\Projects\ZaloAIC\ZaloAIC2025\dataset
-train: labels\train.txt
-val: labels\val.txt
-
-nc: 1
-names: ['target']

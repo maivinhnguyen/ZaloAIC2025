@@ -25,6 +25,7 @@ from ultralytics.engine.validator import BaseValidator
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import DetectionModel, SiamDetectionModel
 from ultralytics.utils import DEFAULT_CFG, LOGGER, RANK
+from ultralytics.utils.metrics import DetMetrics
 from ultralytics.utils.patches import override_configs
 from ultralytics.utils.plotting import plot_images, plot_labels
 from ultralytics.utils.torch_utils import torch_distributed_zero_first, unwrap_model
@@ -70,6 +71,8 @@ class SiamDetectionTrainer(BaseTrainer):
         """
         super().__init__(cfg, overrides, _callbacks)
         self.loss_names = ("iou_loss", "bce_loss", "rpl_loss", "dice_loss", "dfl_loss")
+        # Initialize tloss to zeros with the same length as loss_names
+        self.tloss = [0.0] * len(self.loss_names)
 
     def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None):
         """
@@ -229,10 +232,16 @@ class SiamDetectionTrainer(BaseTrainer):
         """
         keys = [f"{prefix}/{x}" for x in self.loss_names]
         if loss_items is not None:
-            loss_dict = dict(zip(keys, loss_items))
-        else:
-            loss_dict = {k: v.item() if v is not None else 0 for k, v in zip(keys, self.tloss)}
-        return loss_dict
+            formatted = []
+            for item in loss_items:
+                if item is None:
+                    formatted.append(0.0)
+                elif hasattr(item, "item"):
+                    formatted.append(float(item.item()))
+                else:
+                    formatted.append(float(item))
+            return dict(zip(keys, formatted))
+        return keys
 
     def progress_string(self):
         """Return a formatted training progress string."""
@@ -275,6 +284,7 @@ class SiamDetectionValidator(BaseValidator):
         """
         super().__init__(dataloader, save_dir, args, _callbacks)
         self.loss_names = ("iou_loss", "bce_loss", "rpl_loss", "dice_loss", "dfl_loss")
+        self.metrics = DetMetrics()  # Initialize metrics for detection validation
 
     def preprocess_batch(self, batch: dict) -> dict:
         """
