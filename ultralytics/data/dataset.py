@@ -1224,18 +1224,24 @@ class SiamDataset(YOLODataset):
             query_data["img"] = torch.from_numpy(query_data["img"].transpose(2, 0, 1))
             support_data["img"] = torch.from_numpy(support_data["img"].transpose(2, 0, 1))
             
-            # Extract bboxes and cls from instances
+            # Extract bboxes from instances and cls from label (cls is stored separately, not in instances)
             if "instances" in query_data:
                 instances = query_data.pop("instances")
-                query_data["bboxes"] = torch.from_numpy(instances.bboxes) if len(instances) else torch.zeros((0, 4))
-                query_data["cls"] = torch.from_numpy(instances.cls) if len(instances) else torch.zeros((0, 1))
-                query_data["batch_idx"] = torch.zeros(len(instances))
+                nl = len(instances)
+                query_data["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((0, 4))
+                query_data["batch_idx"] = torch.zeros(nl)
+                # cls is stored separately in label dict, not in instances
+                if "cls" in query_data:
+                    query_data["cls"] = torch.from_numpy(query_data["cls"]) if nl else torch.zeros((0, 1))
             
             if "instances" in support_data:
                 instances = support_data.pop("instances")
-                support_data["bboxes"] = torch.from_numpy(instances.bboxes) if len(instances) else torch.zeros((0, 4))
-                support_data["cls"] = torch.from_numpy(instances.cls) if len(instances) else torch.zeros((0, 1))
-                support_data["batch_idx"] = torch.zeros(len(instances))
+                nl = len(instances)
+                support_data["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((0, 4))
+                support_data["batch_idx"] = torch.zeros(nl)
+                # cls is stored separately in label dict, not in instances
+                if "cls" in support_data:
+                    support_data["cls"] = torch.from_numpy(support_data["cls"]) if nl else torch.zeros((0, 1))
 
         output = query_data
         output["support_img"] = support_data["img"]
