@@ -1216,10 +1216,26 @@ class SiamDataset(YOLODataset):
             support_data = self.transforms(deepcopy(support_label))
             self._restore_rng_state(rng_state_after_query)
         else:
+            # When no transforms, manually extract bboxes and cls from instances
             query_data = deepcopy(label)
             support_data = deepcopy(support_label)
+            
+            # Convert image to tensor
             query_data["img"] = torch.from_numpy(query_data["img"].transpose(2, 0, 1))
             support_data["img"] = torch.from_numpy(support_data["img"].transpose(2, 0, 1))
+            
+            # Extract bboxes and cls from instances
+            if "instances" in query_data:
+                instances = query_data.pop("instances")
+                query_data["bboxes"] = torch.from_numpy(instances.bboxes) if len(instances) else torch.zeros((0, 4))
+                query_data["cls"] = torch.from_numpy(instances.cls) if len(instances) else torch.zeros((0, 1))
+                query_data["batch_idx"] = torch.zeros(len(instances))
+            
+            if "instances" in support_data:
+                instances = support_data.pop("instances")
+                support_data["bboxes"] = torch.from_numpy(instances.bboxes) if len(instances) else torch.zeros((0, 4))
+                support_data["cls"] = torch.from_numpy(instances.cls) if len(instances) else torch.zeros((0, 1))
+                support_data["batch_idx"] = torch.zeros(len(instances))
 
         output = query_data
         output["support_img"] = support_data["img"]
