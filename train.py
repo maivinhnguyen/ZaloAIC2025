@@ -1,5 +1,6 @@
 from ultralytics.models.siam_train import SiamDetectionTrainer
 import argparse
+import multiprocessing
 
 def train(data, model, epochs, imgsz, batch, device):
     trainer = SiamDetectionTrainer(overrides={
@@ -9,7 +10,7 @@ def train(data, model, epochs, imgsz, batch, device):
         'imgsz': imgsz,
         'batch': batch,
         'device': device,
-        'workers': 4,
+        'workers': 2,  # Reduced from 4 - multiprocessing with CUDA can be unstable with many workers
     })
 
     results = trainer.train()
@@ -28,6 +29,8 @@ def main():
           imgsz=args.imgsz, batch=args.batch, device=args.device)
 
 if __name__ == '__main__':
+    # Required for proper CUDA/multiprocessing support on Linux
+    multiprocessing.set_start_method('spawn', force=True)
     main()
 
 
