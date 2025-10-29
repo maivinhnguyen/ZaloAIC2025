@@ -180,19 +180,27 @@ def move_single_triplet(args):
     Creates proper triplet format line.
     Note: Support images are already copied to final location.
     This function only needs to move the query image and compute relative paths.
+    
+    Paths are computed relative to the query directory so that when label files
+    are loaded by the dataset class, the paths resolve correctly.
     """
-    q_stage_path, s_stage_names, bboxes, is_positive, query_out_dir, support_out_dir, base_out_dir = args
+    q_stage_path, s_stage_names, bboxes, is_positive, query_out_dir, support_out_dir = args
     
     # 1. Move Query Image
     q_final_path = query_out_dir / q_stage_path.name
     shutil.move(str(q_stage_path), str(q_final_path))
-    q_rel_path = q_final_path.relative_to(base_out_dir)
+    
+    # Compute paths relative to query_out_dir (where label file reader starts)
+    # Use os.path.relpath to handle sibling directories correctly
+    q_rel_path = os.path.relpath(q_final_path, query_out_dir)
 
-    # 2. Get support image relative paths (files already exist in support_out_dir)
+    # 2. Get support image relative paths (relative to query_out_dir)
+    # Support images are in ../support/ relative to query dir
     s_rel_paths = []
     for s_name in s_stage_names:
         s_final_path = support_out_dir / s_name
-        s_rel_paths.append(str(s_final_path.relative_to(base_out_dir)))
+        s_rel_path = os.path.relpath(s_final_path, query_out_dir)
+        s_rel_paths.append(str(s_rel_path))
 
     # 3. Format triplet line: query_path support1_path support2_path support3_path [bboxes...]
     # Triplet format: <query_img> <support_img1> <support_img2> <support_img3> <class> <x> <y> <w> <h> [...]
@@ -253,7 +261,7 @@ def move_files_and_write_triplets(
     # Prepare arguments for each triplet
     # Now we only pass the support image filenames (not paths), since files are already copied
     args_list = [
-        (q_stage_path, [s_stage_path.name for s_stage_path in s_stage_paths], bboxes, is_positive, query_out_dir, support_out_dir, base_out_dir)
+        (q_stage_path, [s_stage_path.name for s_stage_path in s_stage_paths], bboxes, is_positive, query_out_dir, support_out_dir)
         for (q_stage_path, s_stage_paths, bboxes, is_positive) in triplet_data_list
     ]
     
