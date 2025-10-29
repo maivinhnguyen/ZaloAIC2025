@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from copy import deepcopy
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
@@ -860,3 +861,310 @@ class ClassificationDataset:
             x["msgs"] = msgs  # warnings
             save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
             return samples
+
+
+class SiamDataset(YOLODataset):
+    """
+    Dataset class for loading one-shot object detection data in Siamese format.
+
+    This class extends YOLODataset to support Siamese networks by loading triplets of
+    (query_image, support_image, labels). The dataset applies identical geometric transforms
+    to both query and support images to preserve spatial consistency.
+
+    The label file format is:
+    - query_img_path support_img_path cls1 x1 y1 w1 h1 cls2 x2 y2 w2 h2 ...
+
+    Attributes:
+        support_images_cache (dict): Cache of support images to speed up repeated access.
+        transform_seed (int): Seed for reproducible augmentation across image pairs.
+
+    Methods:
+        get_labels: Load triplet data from label files.
+        __getitem__: Return a triplet of (query_img, support_img, labels).
+        build_transforms: Build transforms that will be applied identically to both images.
+        collate_fn: Collate Siamese triplets into batches.
+
+    Examples:
+        >>> dataset = SiamDataset(img_path="path/to/images", data={"names": {0: "object"}}, task="detect")
+        >>> sample = dataset[0]
+        >>> print(sample.keys())  # Should include 'query_img', 'support_img', 'img'
+    """
+
+    def __init__(self, *args, data: dict | None = None, task: str = "detect", **kwargs):
+        """
+        Initialize a SiamDataset.
+
+        Args:
+            data (dict, optional): Dataset configuration dictionary.
+            task (str): Task type, typically 'detect' for Siamese detection.
+            *args (Any): Additional positional arguments for the parent class.
+            **kwargs (Any): Additional keyword arguments for the parent class.
+        """
+        self.support_images_cache = {}
+        self.transform_seed = None
+        super().__init__(*args, data=data, task=task, **kwargs)
+
+    def get_labels(self) -> list[dict]:
+        """
+        Return dictionary of labels for Siamese YOLO training.
+
+        This method loads labels from disk and prepares triplet (query, support, labels) data.
+        Each label entry contains paths to both query and support images along with annotations.
+
+        Returns:
+            (list[dict]): List of label dictionaries, each containing query_image, support_image,
+                         and annotation information.
+        """
+        self.label_files = img2label_paths(self.im_files)
+        cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
+
+        try:
+            cache, exists = load_dataset_cache_file(cache_path), True
+            assert cache["version"] == DATASET_CACHE_VERSION
+            assert cache["hash"] == get_hash(self.label_files + self.im_files)
+        except (FileNotFoundError, AssertionError, AttributeError, ModuleNotFoundError):
+            cache, exists = self.cache_labels_siam(cache_path), False
+
+        nf, nm, ne, nc, n = cache.pop("results")
+        if exists and LOCAL_RANK in {-1, 0}:
+            d = f"Scanning {cache_path}... {nf} images, {nm + ne} backgrounds, {nc} corrupt"
+            TQDM(None, desc=self.prefix + d, total=n, initial=n)
+            if cache["msgs"]:
+                LOGGER.info("\n".join(cache["msgs"]))
+
+        [cache.pop(k) for k in ("hash", "version", "msgs")]
+        labels = cache["labels"]
+        if not labels:
+            raise RuntimeError(
+                f"No valid images found in {cache_path}. {HELP_URL}"
+            )
+
+        # For Siamese dataset, we may need to adjust im_files
+        self.im_files = [lb["im_file"] for lb in labels]
+        return labels
+
+    def cache_labels_siam(self, path: Path = Path("./labels_siam.cache")) -> dict:
+        """
+        Cache Siamese dataset labels.
+
+        Args:
+            path (Path): Path where to save the cache file.
+
+        Returns:
+            (dict): Dictionary containing cached labels and metadata.
+        """
+        x = {"labels": []}
+        nm, nf, ne, nc, msgs = 0, 0, 0, 0, []
+        desc = f"{self.prefix}Scanning Siamese {path.parent / path.stem}..."
+        total = len(self.im_files)
+
+        with ThreadPool(NUM_THREADS) as pool:
+            results = pool.imap(
+                func=self._verify_siam_label,
+                iterable=zip(self.im_files, self.label_files, repeat(self.prefix)),
+            )
+            pbar = TQDM(results, desc=desc, total=total)
+            for im_file, support_file, shape, cls_label, bboxes, nm_f, nf_f, ne_f, nc_f, msg in pbar:
+                nm += nm_f
+                nf += nf_f
+                ne += ne_f
+                nc += nc_f
+                if im_file:
+                    x["labels"].append(
+                        {
+                            "im_file": im_file,
+                            "support_file": support_file,
+                            "shape": shape,
+                            "cls": cls_label,
+                            "bboxes": bboxes,
+                            "normalized": True,
+                            "bbox_format": "xywh",
+                        }
+                    )
+                if msg:
+                    msgs.append(msg)
+                pbar.desc = f"{desc} {nf} images, {nm + ne} backgrounds, {nc} corrupt"
+            pbar.close()
+
+        if msgs:
+            LOGGER.info("\n".join(msgs))
+        if nf == 0:
+            LOGGER.warning(f"{self.prefix}No labels found in Siamese format. {HELP_URL}")
+
+        x["hash"] = get_hash(self.label_files + self.im_files)
+        x["results"] = nf, nm, ne, nc, len(self.im_files)
+        x["msgs"] = msgs
+        save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
+        return x
+
+    @staticmethod
+    def _verify_siam_label(args):
+        """
+        Verify a single Siamese label file and image pair.
+
+        Args:
+            args: Tuple of (im_file, label_file, prefix)
+
+        Returns:
+            Tuple containing verification results.
+        """
+        im_file, lb_file, prefix = args
+        nm, nf, ne, nc, msg = 0, 0, 1, 0, ""
+
+        try:
+            im = Image.open(im_file)
+            im.verify()
+            shape = (im.height, im.width)
+            assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
+            assert im.format.lower() in {"jpeg", "jpg", "png"}, f"invalid image format {im.format}"
+            if im.format.lower() in {"jpeg", "jpg"}:
+                with open(im_file, "rb") as f:
+                    is_jfif = b"JFIF" in f.peek(10)
+        except Exception as e:
+            msg = f"{prefix}WARNING ⚠️ {im_file}: ignoring corrupted image/label: {e}"
+            return (
+                im_file if not msg else None,
+                None,
+                shape if msg == "" else (0, 0),
+                np.zeros((0, 1), dtype=np.float32),
+                np.zeros((0, 4), dtype=np.float32),
+                nm,
+                nf,
+                ne,
+                nc,
+                msg,
+            )
+
+        try:
+            # Each line: query_img support_img cls1 x1 y1 w1 h1 cls2 x2 y2 w2 h2 ...
+            with open(lb_file, encoding="utf-8", errors="ignore") as f:
+                lb = [x.split() for x in f.readlines()]
+
+            if len(lb) > 0:
+                # First two items are image paths, rest are annotations
+                support_file = lb[0][1] if len(lb[0]) > 1 else None
+                annotation_data = lb[0][2:] if len(lb[0]) > 2 else []
+
+                # Parse bounding boxes and classes
+                classes = []
+                bboxes = []
+                for i in range(0, len(annotation_data), 5):
+                    if i + 4 < len(annotation_data):
+                        classes.append(float(annotation_data[i]))
+                        bboxes.append([float(annotation_data[i + 1]), float(annotation_data[i + 2]),
+                                      float(annotation_data[i + 3]), float(annotation_data[i + 4])])
+
+                if len(bboxes) > 0:
+                    cls = np.array(classes, dtype=np.float32).reshape(-1, 1)
+                    bboxes = np.array(bboxes, dtype=np.float32)
+                    nf = 1
+                    ne = 0
+                else:
+                    cls = np.zeros((0, 1), dtype=np.float32)
+                    bboxes = np.zeros((0, 4), dtype=np.float32)
+                    nf = 1
+                    ne = 0
+            else:
+                cls = np.zeros((0, 1), dtype=np.float32)
+                bboxes = np.zeros((0, 4), dtype=np.float32)
+                support_file = None
+                nf = 1
+                ne = 0
+
+        except Exception as e:
+            msg = f"{prefix}WARNING ⚠️ {lb_file}: ignoring corrupted label: {e}"
+            cls = np.zeros((0, 1), dtype=np.float32)
+            bboxes = np.zeros((0, 4), dtype=np.float32)
+            support_file = None
+            ne = 1
+
+        return im_file, support_file, shape, cls, bboxes, nm, nf, ne, nc, msg
+
+    def __getitem__(self, index: int) -> dict:
+        """
+        Return a sample containing query image, support image, and labels.
+
+        Args:
+            index (int): Index of the sample.
+
+        Returns:
+            (dict): Dictionary containing 'query_img', 'support_img', and label information.
+        """
+        label = deepcopy(self.labels[index])
+        label.pop("pop", None)
+
+        # Get query image
+        query_img = self.load_image(index)
+
+        # Get support image
+        support_file = label.get("support_file")
+        if support_file:
+            if support_file in self.support_images_cache:
+                support_img = self.support_images_cache[support_file]
+            else:
+                support_path = Path(support_file)
+                if not support_path.is_absolute():
+                    support_path = Path(self.im_files[0]).parent / support_file
+                support_img = cv2.imread(str(support_path))
+                if support_img is not None:
+                    support_img = cv2.cvtColor(support_img, cv2.COLOR_BGR2RGB)
+                    self.support_images_cache[support_file] = support_img
+        else:
+            # If no support image, use the query image itself
+            support_img = query_img.copy()
+
+        # Update labels
+        label = self.update_labels_info(label)
+
+        # Apply same transforms to both query and support images
+        # This ensures geometric consistency between the two images
+        if self.transforms:
+            # Store the transform seed for reproducibility
+            torch.manual_seed(index)
+            data_query = self.transforms(img=query_img, cls=label["instances"].cls, bboxes=label["instances"].bboxes,
+                                        segments=label["instances"].segments)
+            torch.manual_seed(index)
+            data_support = self.transforms(img=support_img, cls=label["instances"].cls,
+                                          bboxes=label["instances"].bboxes, segments=label["instances"].segments)
+
+            query_img = data_query["img"]
+            support_img = data_support["img"]
+            label["instances"] = data_query["instances"]
+
+        # Return both query and support images
+        data = {"query_img": query_img, "support_img": support_img}
+        data.update(label)
+        return data
+
+    @staticmethod
+    def collate_fn(batch: list[dict]) -> dict:
+        """
+        Collate Siamese data samples into batches.
+
+        Args:
+            batch (list[dict]): List of sample dictionaries.
+
+        Returns:
+            (dict): Collated batch with 'query_img', 'support_img', and other data.
+        """
+        new_batch = {}
+        batch = [dict(sorted(b.items())) for b in batch]
+        keys = batch[0].keys()
+        values = list(zip(*[list(b.values()) for b in batch]))
+
+        for i, k in enumerate(keys):
+            value = values[i]
+            if k in {"query_img", "support_img", "img"}:
+                value = torch.stack(value, 0)
+            elif k == "visuals":
+                value = torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
+            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
+                value = torch.cat(value, 0)
+            new_batch[k] = value
+
+        new_batch["batch_idx"] = list(new_batch.get("batch_idx", []))
+        for i in range(len(new_batch["batch_idx"])):
+            new_batch["batch_idx"][i] += i
+        new_batch["batch_idx"] = torch.cat(new_batch["batch_idx"], 0) if new_batch["batch_idx"] else torch.tensor([])
+
+        return new_batch

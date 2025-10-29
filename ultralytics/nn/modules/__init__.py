@@ -89,6 +89,7 @@ from .head import (
     YOLOESegment,
     v10Detect,
 )
+from .siam import MatchingModule
 from .transformer import (
     AIFI,
     MLP,
@@ -114,6 +115,7 @@ __all__ = (
     "DFL",
     "ELAN1",
     "MLP",
+    "MatchingModule",
     "OBB",
     "PSA",
     "SPP",

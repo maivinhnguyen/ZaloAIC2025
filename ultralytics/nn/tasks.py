@@ -19,6 +19,7 @@ from ultralytics.nn.modules import (
     C3,
     C3TR,
     ELAN1,
+    MatchingModule,
     OBB,
     PSA,
     SPP,
@@ -609,6 +610,148 @@ class PoseModel(DetectionModel):
     def init_criterion(self):
         """Initialize the loss criterion for the PoseModel."""
         return v8PoseLoss(self)
+
+
+class SiamDetectionModel(DetectionModel):
+    """
+    SiamYOLOv8 Siamese Detection Model for one-shot object detection.
+
+    This model implements the SiamYOLOv8 architecture which uses a Siamese network approach
+    with matching modules to perform one-shot object detection. It processes both query and
+    support images through a shared backbone and fuses their features using matching modules.
+
+    Attributes:
+        query_backbone (nn.Module): Backbone for processing query images.
+        support_backbone (nn.Module): Reference to the same backbone (shared weights).
+        matching_modules (nn.ModuleList): List of three MatchingModules for feature fusion.
+        head (nn.Module): Detection head that processes fused features.
+        stride (torch.Tensor): Model stride values.
+
+    Methods:
+        __init__: Initialize the SiamDetectionModel.
+        forward: Process query and support images through the model.
+        init_criterion: Initialize the loss criterion for Siamese detection.
+
+    Examples:
+        Initialize a Siamese detection model
+        >>> model = SiamDetectionModel("yolo11n.yaml", ch=3, nc=1)
+        >>> query_img = torch.randn(2, 3, 640, 640)
+        >>> support_img = torch.randn(2, 3, 640, 640)
+        >>> results = model(query_img, support_img)
+    """
+
+    def __init__(self, cfg="yolo11n.yaml", ch=3, nc=None, verbose=True):
+        """
+        Initialize the SiamDetectionModel with the given config and parameters.
+
+        Args:
+            cfg (str | dict): Model configuration file path or dictionary.
+            ch (int): Number of input channels.
+            nc (int, optional): Number of classes (typically 1 for single-object detection).
+            verbose (bool): Whether to display model information.
+        """
+        # Initialize parent DetectionModel - this sets up the regular detection backbone and head
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=False)
+
+        # Create three MatchingModules for fusing features at different scales (P3, P4, P5)
+        self.matching_modules = nn.ModuleList([MatchingModule() for _ in range(3)])
+
+        if verbose:
+            self.info()
+            LOGGER.info("")
+
+    def _extract_features(self, x: torch.Tensor, backbone_module: nn.Module) -> tuple[torch.Tensor, ...]:
+        """
+        Extract multi-scale features from the backbone.
+
+        This method processes an image through the backbone and extracts intermediate features
+        at three scales (P3, P4, P5) corresponding to the three output layers.
+
+        Args:
+            x (torch.Tensor): Input image tensor of shape (B, C, H, W).
+            backbone_module (nn.Module): The backbone module to process through.
+
+        Returns:
+            tuple[torch.Tensor, ...]: Three feature maps at different scales.
+        """
+        # We need to extract features at intermediate points (P3, P4, P5)
+        # This typically means extracting after specific layers in the backbone
+        features = []
+        for i, m in enumerate(backbone_module):
+            x = m(x)
+            # For YOLO models, the detection head expects multiple scale features
+            # These are typically at indices corresponding to P3, P4, P5
+            if isinstance(m, (Concat, Detect)):
+                # Skip detection/concat layers during feature extraction
+                continue
+            # Store intermediate features - adjust based on actual model structure
+            if hasattr(m, "save") and m.save:
+                features.append(x)
+        return tuple(features) if len(features) >= 3 else (x, x, x)
+
+    def forward(self, query_img: torch.Tensor, support_img: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """
+        Forward pass for Siamese detection.
+
+        Processes both query and support images through the shared backbone, extracts multi-scale
+        features, fuses them using matching modules, and passes the fused features to the detection head.
+
+        Args:
+            query_img (torch.Tensor): Query image tensor of shape (B, C, H, W).
+            support_img (torch.Tensor): Support image tensor of shape (B, C, H, W).
+
+        Returns:
+            tuple[torch.Tensor, ...]: Detection outputs from the model head.
+        """
+        # Process query image through the backbone
+        # We need to extract intermediate features for matching
+        query_features = []
+        x_query = query_img
+        for m in self.model[:-1]:  # All layers except the detection head
+            x_query = m(x_query)
+            # Store intermediate features that will be passed to head
+            if not isinstance(m, (Concat, AIFI)):  # Skip certain module types
+                query_features.append(x_query)
+
+        # Process support image through the same backbone (shared weights)
+        support_features = []
+        x_support = support_img
+        for m in self.model[:-1]:
+            x_support = m(x_support)
+            if not isinstance(m, (Concat, AIFI)):
+                support_features.append(x_support)
+
+        # Take the last 3 features (typically P3, P4, P5 from FPN)
+        query_feats = query_features[-3:] if len(query_features) >= 3 else query_features
+        support_feats = support_features[-3:] if len(support_features) >= 3 else support_features
+
+        # Fuse corresponding feature maps using matching modules
+        fused_features = []
+        for i, mm in enumerate(self.matching_modules):
+            if i < len(query_feats) and i < len(support_feats):
+                fused = mm(query_feats[i], support_feats[i])
+                fused_features.append(fused)
+            elif i < len(query_feats):
+                fused_features.append(query_feats[i])
+
+        # Pass fused features to the detection head
+        # The detection head expects a list of feature maps
+        det_head = self.model[-1]  # Detect module
+        if isinstance(det_head, Detect):
+            return det_head(fused_features)
+        else:
+            # Fallback: process through remaining modules
+            x = fused_features[-1] if fused_features else x_query
+            for m in self.model[-1:]:
+                x = m(x)
+            return x
+
+    def init_criterion(self):
+        """Initialize the loss criterion for the SiamDetectionModel."""
+        # Import here to avoid circular imports
+        from ultralytics.utils.loss import SiamLoss
+
+        return SiamLoss(self)
 
 
 class ClassificationModel(BaseModel):

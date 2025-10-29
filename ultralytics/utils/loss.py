@@ -855,3 +855,201 @@ class TVPSegmentLoss(TVPDetectLoss):
         vp_loss = self.vp_criterion((vp_feats, pred_masks, proto), batch)
         cls_loss = vp_loss[0][2]
         return cls_loss, vp_loss[1]
+
+
+class RatioPreservingLoss(nn.Module):
+    """Ratio-Preserving Loss (RPL) for SiamYOLOv8."""
+
+    def __init__(self):
+        """Initialize the Ratio-Preserving Loss."""
+        super().__init__()
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate Ratio-Preserving Loss.
+
+        Args:
+            pred (torch.Tensor): Predicted bounding boxes in format (x, y, w, h).
+            target (torch.Tensor): Target bounding boxes in format (x, y, w, h).
+
+        Returns:
+            torch.Tensor: Scalar loss value.
+        """
+        # Extract width and height components
+        pred_w = pred[..., 2]
+        pred_h = pred[..., 3]
+        target_w = target[..., 2]
+        target_h = target[..., 3]
+
+        # Calculate aspect ratios
+        pred_ratio = pred_w / (pred_h + 1e-8)
+        target_ratio = target_w / (target_h + 1e-8)
+
+        # Calculate ratio-preserving loss using log difference
+        ratio_loss = F.smooth_l1_loss(torch.log(pred_ratio), torch.log(target_ratio))
+        return ratio_loss
+
+
+class DiceLoss(nn.Module):
+    """Dice Loss for SiamYOLOv8."""
+
+    def __init__(self):
+        """Initialize the Dice Loss."""
+        super().__init__()
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate Dice Loss.
+
+        Args:
+            pred (torch.Tensor): Predicted probabilities.
+            target (torch.Tensor): Target binary labels.
+
+        Returns:
+            torch.Tensor: Scalar loss value.
+        """
+        smooth = 1e-5
+
+        # Sigmoid for probabilities
+        pred_prob = torch.sigmoid(pred)
+
+        # Flatten tensors
+        pred_flat = pred_prob.view(-1)
+        target_flat = target.view(-1)
+
+        # Calculate intersection and union
+        intersection = (pred_flat * target_flat).sum()
+        union = pred_flat.sum() + target_flat.sum()
+
+        # Dice coefficient
+        dice_coeff = (2.0 * intersection + smooth) / (union + smooth)
+
+        # Dice loss
+        dice_loss = 1.0 - dice_coeff
+        return dice_loss
+
+
+class SiamLoss(v8DetectionLoss):
+    """
+    Criterion class for computing training losses for SiamYOLOv8 one-shot detection.
+
+    This loss function implements the composite loss from the SiamYOLOv8 paper:
+    Loss = 7.5 * L_IoU + 0.5 * (L_BCE + L_RPL + L_DICE) + 1.5 * L_DFL
+
+    Where:
+    - L_IoU: IoU loss for bounding box regression
+    - L_BCE: Binary Cross-Entropy loss for classification
+    - L_RPL: Ratio-Preserving Loss for aspect ratio preservation
+    - L_DICE: Dice loss for object detection
+    - L_DFL: Distribution Focal Loss for fine-grained localization
+
+    Attributes:
+        rpl_loss (RatioPreservingLoss): Ratio-Preserving Loss module.
+        dice_loss (DiceLoss): Dice Loss module.
+    """
+
+    def __init__(self, model, tal_topk: int = 10):
+        """
+        Initialize SiamLoss with model parameters and loss components.
+
+        Args:
+            model (torch.nn.Module): The SiamDetectionModel instance.
+            tal_topk (int): Top-k assignments for Task-Aligned Assigner.
+        """
+        super().__init__(model, tal_topk=tal_topk)
+        self.rpl_loss = RatioPreservingLoss().to(self.device)
+        self.dice_loss = DiceLoss().to(self.device)
+
+        # Loss weights for the composite loss
+        self.w_iou = 7.5
+        self.w_bce = 0.5
+        self.w_rpl = 0.5
+        self.w_dice = 0.5
+        self.w_dfl = 1.5
+
+    def __call__(self, preds: Any, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Calculate the SiamYOLOv8 composite loss.
+
+        Args:
+            preds (Any): Model predictions.
+            batch (dict): Batch data including images, labels, and targets.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Total loss and component losses.
+        """
+        loss = torch.zeros(5, device=self.device)  # iou, bce, rpl, dice, dfl
+        feats = preds[1] if isinstance(preds, tuple) else preds
+        pred_distri, pred_scores = torch.cat(
+            [xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2
+        ).split((self.reg_max * 4, self.nc), 1)
+
+        pred_scores = pred_scores.permute(0, 2, 1).contiguous()
+        pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+
+        dtype = pred_scores.dtype
+        batch_size = pred_scores.shape[0]
+        imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]
+        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+
+        # Targets
+        targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
+        targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+        gt_labels, gt_bboxes = targets.split((1, 4), 2)
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
+
+        # Pboxes
+        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)
+
+        _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
+            pred_scores.detach().sigmoid(),
+            (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+            anchor_points * stride_tensor,
+            gt_labels,
+            gt_bboxes,
+            mask_gt,
+        )
+
+        target_scores_sum = max(target_scores.sum(), 1)
+
+        # Cls loss (BCE)
+        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+
+        # Bbox loss
+        if fg_mask.sum():
+            loss_iou, loss_dfl = self.bbox_loss(
+                pred_distri,
+                pred_bboxes,
+                anchor_points,
+                target_bboxes / stride_tensor,
+                target_scores,
+                target_scores_sum,
+                fg_mask,
+            )
+            loss[0] = loss_iou
+            loss[4] = loss_dfl
+
+            # Ratio-Preserving Loss
+            fg_pred_bboxes = pred_bboxes[fg_mask]
+            fg_target_bboxes = target_bboxes[fg_mask] / stride_tensor
+            if fg_pred_bboxes.numel() > 0:
+                loss[2] = self.rpl_loss(fg_pred_bboxes, fg_target_bboxes)
+
+            # Dice Loss (using predictions confidence)
+            fg_pred_scores = pred_scores[fg_mask]
+            if fg_pred_scores.numel() > 0:
+                # Use foreground mask targets as binary labels
+                fg_target_scores = target_scores[fg_mask].max(dim=-1)[0]  # Get max class score
+                loss[3] = self.dice_loss(fg_pred_scores.max(dim=-1)[0].unsqueeze(-1), fg_target_scores.unsqueeze(-1))
+
+        # Apply loss weights from the paper:
+        # Loss = 7.5 * L_IoU + 0.5 * (L_BCE + L_RPL + L_DICE) + 1.5 * L_DFL
+        weighted_loss = (
+            self.w_iou * loss[0]
+            + self.w_bce * loss[1]
+            + self.w_rpl * loss[2]
+            + self.w_dice * loss[3]
+            + self.w_dfl * loss[4]
+        )
+
+        return weighted_loss * batch_size, loss.detach()
