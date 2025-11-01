@@ -259,6 +259,58 @@ class SiamDetectionTrainer(BaseTrainer):
         log_message += ", ".join([f"{key}={value:.6f}" if isinstance(value, float) else f"{key}={value}" for key, value in metrics.items()])
         LOGGER.info(log_message)
 
+    def plot_training_samples(self, batch, ni):
+        """
+        Plot training samples (query and support images) during YOLO training.
+
+        Args:
+            batch (dict): Batch dictionary containing 'query_img', 'support_img', and labels.
+            ni (int): Batch iteration index.
+        """
+        from pathlib import Path
+
+        # Get images from batch
+        query_imgs = batch.get("query_img")
+        support_imgs = batch.get("support_img")
+
+        if query_imgs is not None and support_imgs is not None:
+            # Prepare output directory
+            output_dir = Path(self.save_dir) / "train_batch_plots"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create batch dicts for plotting query and support images separately
+            query_batch = {
+                "img": query_imgs,
+                "cls": batch.get("cls"),
+                "bboxes": batch.get("bboxes"),
+            }
+            
+            support_batch = {
+                "img": support_imgs,
+                "cls": batch.get("cls"),
+                "bboxes": batch.get("bboxes"),
+            }
+
+            # Plot query images
+            try:
+                plot_images(
+                    labels=query_batch,
+                    fname=str(output_dir / f"train_batch_query_{ni}.jpg"),
+                    on_plot=self.on_plot,
+                )
+            except Exception as e:
+                LOGGER.warning(f"Failed to plot query images: {e}")
+
+            # Plot support images
+            try:
+                plot_images(
+                    labels=support_batch,
+                    fname=str(output_dir / f"train_batch_support_{ni}.jpg"),
+                    on_plot=self.on_plot,
+                )
+            except Exception as e:
+                LOGGER.warning(f"Failed to plot support images: {e}")
+
     def visualize_training_samples(self, batch, output_dir=None, epoch=0, max_samples=5):
         """
         Visualize a limited number of training samples (query and support images) and save to output folder.
@@ -299,34 +351,6 @@ class SiamDetectionTrainer(BaseTrainer):
                 plt.savefig(save_path)
                 plt.close(fig)
                 LOGGER.info(f"Saved visualization: {save_path}")
-
-    def train_epoch(self, epoch):
-        """
-        Train for a single epoch and log metrics with labels.
-
-        Args:
-            epoch (int): Current epoch number.
-        """
-        # Visualize training samples only at the beginning of training (epoch 0)
-        if epoch == 0:
-            batch = next(iter(self.train_loader))  # Example: Get a batch from the dataloader
-            LOGGER.info("Visualizing training samples for epoch 0")
-            self.visualize_training_samples(batch, epoch=epoch)
-
-        # Example metrics dictionary (replace with actual metrics from training loop)
-        metrics = {
-            "iou_loss": self.tloss[0],
-            "bce_loss": self.tloss[1],
-            "rpl_loss": self.tloss[2],
-            "dice_loss": self.tloss[3],
-            "dfl_loss": self.tloss[4],
-            "learning_rate": self.optimizer.param_groups[0]['lr']
-        }
-
-        # Log metrics at the end of the epoch
-        LOGGER.info(f"Logging metrics for epoch {epoch}")
-        self.log_metrics(epoch, metrics)
-        LOGGER.info(f"Metrics logged for epoch {epoch}")
 
 
 class SiamDetectionValidator(BaseValidator):
