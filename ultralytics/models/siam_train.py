@@ -249,19 +249,19 @@ class SiamDetectionTrainer(BaseTrainer):
 
     def log_metrics(self, epoch, metrics):
         """
-        Log training metrics for the current epoch.
+        Log training metrics for the current epoch with labels.
 
         Args:
             epoch (int): Current epoch number.
             metrics (dict): Dictionary containing metric names and their values.
         """
         log_message = f"Epoch {epoch}: "
-        log_message += ", ".join([f"{key}={value:.4f}" for key, value in metrics.items()])
+        log_message += ", ".join([f"{key}={value:.6f}" if isinstance(value, float) else f"{key}={value}" for key, value in metrics.items()])
         LOGGER.info(log_message)
 
     def train_epoch(self, epoch):
         """
-        Train for a single epoch and log metrics.
+        Train for a single epoch and log metrics with labels.
 
         Args:
             epoch (int): Current epoch number.
