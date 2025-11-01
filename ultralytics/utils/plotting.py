@@ -737,7 +737,9 @@ def plot_images(
         if isinstance(labels[k], torch.Tensor):
             labels[k] = labels[k].cpu().numpy()
 
-    cls = labels.get("cls", np.zeros(0, dtype=np.int64))
+    cls = labels.get("cls")
+    if cls is None or (isinstance(cls, np.ndarray) and cls.size == 0):
+        cls = np.zeros(0, dtype=np.int64)
     batch_idx = labels.get("batch_idx", np.zeros(cls.shape, dtype=np.int64))
     bboxes = labels.get("bboxes", np.zeros(0, dtype=np.float32))
     confs = labels.get("conf", None)

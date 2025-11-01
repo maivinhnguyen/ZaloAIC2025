@@ -729,32 +729,41 @@ class SiamDetectionModel(DetectionModel):
         if not getattr(self, '_siam_init_complete', False):
             return super().forward(query_img)
         
-        # Process query image through the full backbone+head pipeline
-        query_output = super().forward(query_img)
-        
-        # For Siamese during training, also process support image
-        # and fuse the features before detection head
+        # For Siamese network: Process query and support images together to ensure matching spatial dimensions
+        # This prevents tensor size mismatches in Concat layers
         if self.training or support_img is not None:
-            # Process support image through backbone
-            support_output = super().forward(support_img)
+            batch_size = query_img.shape[0]
             
-            # In a full implementation, we would:
-            # 1. Extract intermediate features from both images before head
-            # 2. Fuse them with MatchingModules
-            # 3. Pass fused features to detection head
-            # For now, we average the outputs as a simple fusion strategy
-            if isinstance(query_output, (list, tuple)):
-                # If outputs are lists/tuples, fuse elementwise
+            # Concatenate query and support images along batch dimension
+            # This ensures both go through identical operations and produce matching spatial dims
+            combined_imgs = torch.cat([query_img, support_img], dim=0)
+            
+            # Process combined batch through the network
+            combined_output = super().forward(combined_imgs)
+            
+            # Split outputs back into query and support
+            if isinstance(combined_output, (list, tuple)):
+                # If outputs are lists/tuples, split each element
+                query_output = [out[:batch_size] if isinstance(out, torch.Tensor) else out 
+                               for out in combined_output]
+                support_output = [out[batch_size:] if isinstance(out, torch.Tensor) else out 
+                                 for out in combined_output]
+                
+                # Fuse query and support outputs (simple averaging)
                 fused_output = [
-                    (q + s) / 2.0 if isinstance(q, torch.Tensor) else q
+                    (q + s) / 2.0 if isinstance(q, torch.Tensor) and isinstance(s, torch.Tensor) else q
                     for q, s in zip(query_output, support_output)
                 ]
                 return fused_output
             else:
+                # Split tensor output
+                query_output = combined_output[:batch_size]
+                support_output = combined_output[batch_size:]
                 # Simple tensor fusion
                 return (query_output + support_output) / 2.0
         
-        return query_output
+        # Inference mode: only process query image
+        return super().forward(query_img)
 
     def loss(self, batch, preds=None):
         """Compute Siamese detection loss using paired query/support inputs."""
