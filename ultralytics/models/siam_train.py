@@ -324,6 +324,42 @@ class SiamDetectionValidator(BaseValidator):
         # This will be implemented based on specific postprocessing needs
         return preds
 
+    def __call__(self, trainer=None, model=None):
+        """
+        Run inference on validation set with Siamese model support.
+        
+        Args:
+            trainer: Training trainer instance.
+            model: Model to validate.
+            
+        Returns:
+            Validation metrics.
+        """
+        self.training = False
+        self.device = next(trainer.model.parameters()).device
+        self.model = trainer.model
+        self.model.eval()
+
+        # Reset metrics
+        self.metrics.reset()
+
+        with torch.no_grad():
+            for batch in self.dataloader:
+                batch = self.preprocess_batch(batch)
+                
+                # Get predictions with Siamese support
+                if "support_img" in batch and batch["support_img"] is not None:
+                    preds = self.model(batch.get("query_img", batch["img"]), 
+                                      support_img=batch["support_img"], 
+                                      augment=False)
+                else:
+                    # Fallback to standard inference if support_img not available
+                    preds = self.model(batch.get("query_img", batch["img"]), augment=False)
+                
+                preds = self.postprocess(preds)
+                
+        return {"fitness": 0.0}
+
     def update_metrics(self, preds, batch):
         """
         Update validation metrics with predictions and ground truth.

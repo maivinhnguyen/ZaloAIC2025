@@ -703,7 +703,7 @@ class SiamDetectionModel(DetectionModel):
                 features.append(x)
         return tuple(features) if len(features) >= 3 else (x, x, x)
 
-    def forward(self, query_img: torch.Tensor | dict, support_img: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, query_img: torch.Tensor | dict, support_img: torch.Tensor = None, augment: bool = False) -> torch.Tensor:
         """
         Forward pass for Siamese detection.
 
@@ -714,6 +714,7 @@ class SiamDetectionModel(DetectionModel):
             query_img (torch.Tensor): Query image tensor of shape (B, C, H, W).
             support_img (torch.Tensor, optional): Support image tensor of shape (B, C, H, W).
                                                  If None, uses query_img for both (for initialization).
+            augment (bool, optional): Enable augmentation during inference. Default: False.
 
         Returns:
             torch.Tensor: Detection outputs from the model head.
