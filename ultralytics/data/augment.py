@@ -200,8 +200,26 @@ class Compose:
             >>> compose = Compose(transforms)
             >>> transformed_data = compose(input_data)
         """
-        for t in self.transforms:
-            data = t(data)
+        # Check if this is a data dict with empty labels (e.g., support images in Siamese networks)
+        skip_augmentation = False
+        if isinstance(data, dict):
+            cls = data.get("cls")
+            if cls is not None and (not hasattr(cls, '__len__') or len(cls) == 0):
+                skip_augmentation = True
+        
+        if skip_augmentation:
+            # For empty labels, only apply Format and other non-augmentation transforms
+            for t in self.transforms:
+                # Skip augmentation transforms, only apply Format
+                if t.__class__.__name__ in ('RandomFlip', 'RandomPerspective', 'RandomHSV', 
+                                           'RandomGrayscale', 'RandomAutoAugment', 'LetterBox', 'RandomLoadText',
+                                           'Mosaic', 'MixUp', 'CopyPaste'):
+                    continue
+                data = t(data)
+        else:
+            # Normal augmentation pipeline
+            for t in self.transforms:
+                data = t(data)
         return data
 
     def append(self, transform):
