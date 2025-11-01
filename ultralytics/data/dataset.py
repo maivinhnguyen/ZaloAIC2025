@@ -1312,46 +1312,45 @@ class SiamDataset(YOLODataset):
         
         # Handle the case where images might have different sizes
         # Normalize all images to the same size before calling parent collate_fn
+        # Find the maximum dimensions across BOTH query and support images
+        max_h, max_w = 0, 0
+        
         if len(batch) > 0 and "img" in batch[0]:
-            # Find the maximum dimensions for images
-            max_h, max_w = 0, 0
+            # Find max dimensions for query images
             for item in batch:
                 img = item.get("img")
                 if isinstance(img, torch.Tensor) and len(img.shape) == 3:
                     _, h, w = img.shape
                     max_h = max(max_h, h)
                     max_w = max(max_w, w)
-            
-            # Pad all images to max dimensions to ensure they can be stacked
-            if max_h > 0 and max_w > 0:
-                for item in batch:
-                    # Pad query image
-                    if isinstance(item.get("img"), torch.Tensor):
-                        _, h, w = item["img"].shape
-                        if (h, w) != (max_h, max_w):
-                            pad_h = max_h - h
-                            pad_w = max_w - w
-                            # pad format: (left, right, top, bottom) for 2D
-                            item["img"] = torch.nn.functional.pad(item["img"], (0, pad_w, 0, pad_h), value=0.0)
         
-        # Pad support images as well
-        if len(support_imgs) > 0:
-            max_h, max_w = 0, 0
-            for img in support_imgs:
-                if isinstance(img, torch.Tensor) and len(img.shape) == 3:
+        # Also check support images
+        for img in support_imgs:
+            if isinstance(img, torch.Tensor) and len(img.shape) == 3:
+                _, h, w = img.shape
+                max_h = max(max_h, h)
+                max_w = max(max_w, w)
+        
+        # Pad all query images to max dimensions
+        if max_h > 0 and max_w > 0:
+            for item in batch:
+                if isinstance(item.get("img"), torch.Tensor):
+                    _, h, w = item["img"].shape
+                    if (h, w) != (max_h, max_w):
+                        pad_h = max_h - h
+                        pad_w = max_w - w
+                        # pad format: (left, right, top, bottom) for 2D
+                        item["img"] = torch.nn.functional.pad(item["img"], (0, pad_w, 0, pad_h), value=0.0)
+        
+            # Pad support images to the same max dimensions as query images
+            for i in range(len(support_imgs)):
+                img = support_imgs[i]
+                if isinstance(img, torch.Tensor):
                     _, h, w = img.shape
-                    max_h = max(max_h, h)
-                    max_w = max(max_w, w)
-            
-            if max_h > 0 and max_w > 0:
-                for i in range(len(support_imgs)):
-                    img = support_imgs[i]
-                    if isinstance(img, torch.Tensor):
-                        _, h, w = img.shape
-                        if (h, w) != (max_h, max_w):
-                            pad_h = max_h - h
-                            pad_w = max_w - w
-                            support_imgs[i] = torch.nn.functional.pad(img, (0, pad_w, 0, pad_h), value=0.0)
+                    if (h, w) != (max_h, max_w):
+                        pad_h = max_h - h
+                        pad_w = max_w - w
+                        support_imgs[i] = torch.nn.functional.pad(img, (0, pad_w, 0, pad_h), value=0.0)
         
         # Call parent collate_fn to handle stacking and other processing
         collated = YOLODataset.collate_fn(batch)

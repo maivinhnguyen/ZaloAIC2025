@@ -730,6 +730,8 @@ def plot_images(
     for k in {"cls", "bboxes", "conf", "masks", "keypoints", "batch_idx", "images"}:
         if k not in labels:
             continue
+        if labels[k] is None:
+            continue
         if k == "cls" and labels[k].ndim == 2:
             labels[k] = labels[k].squeeze(1)  # squeeze if shape is (n, 1)
         if isinstance(labels[k], torch.Tensor):
