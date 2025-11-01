@@ -1223,7 +1223,18 @@ class SiamDataset(YOLODataset):
             query_data = self.transforms(deepcopy(label))
             rng_state_after_query = self._capture_rng_state()
             self._restore_rng_state(rng_state_before)
-            support_data = self.transforms(deepcopy(support_label))
+            
+            # For support images, apply only basic transforms (no mosaic/mixup which fail with empty labels)
+            # Apply only Format transform (the last one in the pipeline) which handles tensor conversion
+            support_data = deepcopy(support_label)
+            if self.transforms.transforms:
+                # Find and apply only Format and other non-mix transforms
+                for transform in self.transforms.transforms:
+                    # Skip Mosaic and MixUp augmentations for support images (they fail with empty boxes)
+                    if transform.__class__.__name__ in ('Mosaic', 'MixUp', 'CopyPaste'):
+                        continue
+                    support_data = transform(support_data)
+            
             self._restore_rng_state(rng_state_after_query)
         else:
             # When no transforms, manually extract bboxes and cls from instances
