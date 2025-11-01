@@ -275,6 +275,7 @@ class SiamDetectionTrainer(BaseTrainer):
         # Use the training save directory if output_dir is not provided
         output_dir = output_dir or os.path.join(self.save_dir, "visualizations")
         os.makedirs(output_dir, exist_ok=True)
+        LOGGER.info(f"Saving visualizations to {output_dir}")
 
         query_imgs = batch.get("query_img")
         support_imgs = batch.get("support_img")
@@ -297,6 +298,7 @@ class SiamDetectionTrainer(BaseTrainer):
                 save_path = os.path.join(output_dir, f"epoch_{epoch}_sample_{i}.png")
                 plt.savefig(save_path)
                 plt.close(fig)
+                LOGGER.info(f"Saved visualization: {save_path}")
 
     def train_epoch(self, epoch):
         """
@@ -308,6 +310,7 @@ class SiamDetectionTrainer(BaseTrainer):
         # Visualize training samples only at the beginning of training (epoch 0)
         if epoch == 0:
             batch = next(iter(self.train_loader))  # Example: Get a batch from the dataloader
+            LOGGER.info("Visualizing training samples for epoch 0")
             self.visualize_training_samples(batch, epoch=epoch)
 
         # Example metrics dictionary (replace with actual metrics from training loop)
@@ -321,6 +324,7 @@ class SiamDetectionTrainer(BaseTrainer):
         }
 
         # Log metrics at the end of the epoch
+        LOGGER.info(f"Logging metrics for epoch {epoch}")
         self.log_metrics(epoch, metrics)
         LOGGER.info(f"Metrics logged for epoch {epoch}")
 
