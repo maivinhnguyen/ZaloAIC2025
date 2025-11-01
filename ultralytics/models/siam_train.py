@@ -245,9 +245,7 @@ class SiamDetectionTrainer(BaseTrainer):
 
     def progress_string(self):
         """Return a formatted training progress string."""
-        return ("\n" + "%11s" * (4 + len(self.loss_names))).format(
-            "Epoch", "GPU_mem", *self.loss_names, "Instances", "Size"
-        )
+        return ""  # Progress is displayed via pbar.set_description in _do_train
 
 
 class SiamDetectionValidator(BaseValidator):

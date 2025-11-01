@@ -1017,11 +1017,14 @@ class SiamLoss(v8DetectionLoss):
 
         # Bbox loss
         if fg_mask.sum():
+            # Divide target_bboxes by stride_tensor BEFORE masking
+            target_bboxes_normalized = target_bboxes / stride_tensor
+            
             loss_iou, loss_dfl = self.bbox_loss(
                 pred_distri,
                 pred_bboxes,
                 anchor_points,
-                target_bboxes / stride_tensor,
+                target_bboxes_normalized,
                 target_scores,
                 target_scores_sum,
                 fg_mask,
@@ -1031,7 +1034,7 @@ class SiamLoss(v8DetectionLoss):
 
             # Ratio-Preserving Loss
             fg_pred_bboxes = pred_bboxes[fg_mask]
-            fg_target_bboxes = target_bboxes[fg_mask] / stride_tensor
+            fg_target_bboxes = target_bboxes_normalized[fg_mask]
             if fg_pred_bboxes.numel() > 0:
                 loss[2] = self.rpl_loss(fg_pred_bboxes, fg_target_bboxes)
 
