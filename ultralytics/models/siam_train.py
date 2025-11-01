@@ -341,7 +341,7 @@ class SiamDetectionValidator(BaseValidator):
         self.model.eval()
 
         # Reset metrics
-        self.metrics.reset()
+        self.metrics.clear_stats()
 
         with torch.no_grad():
             for batch in self.dataloader:
