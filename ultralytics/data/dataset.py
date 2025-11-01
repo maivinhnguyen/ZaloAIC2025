@@ -360,22 +360,42 @@ class YOLODataset(BaseDataset):
             (dict): Collated batch with stacked tensors.
         """
         new_batch = {}
-        batch = [dict(sorted(b.items())) for b in batch]  # make sure the keys are in the same order
-        keys = batch[0].keys()
-        values = list(zip(*[list(b.values()) for b in batch]))
-        for i, k in enumerate(keys):
-            value = values[i]
+        # Collect all unique keys from all items in the batch
+        all_keys = set()
+        for b in batch:
+            all_keys.update(b.keys())
+        
+        # Process each key separately, handling missing keys gracefully
+        for k in all_keys:
+            values = []
+            for b in batch:
+                if k in b:
+                    values.append(b[k])
+            
+            if not values:
+                continue
+            
+            # Skip batch_idx here, handle it specially after the loop
+            if k == "batch_idx":
+                new_batch[k] = values  # Keep as list of tensors for now
+                continue
+                
             if k in {"img", "text_feats"}:
-                value = torch.stack(value, 0)
+                value = torch.stack(values, 0)
             elif k == "visuals":
-                value = torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
-            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
-                value = torch.cat(value, 0)
+                value = torch.nn.utils.rnn.pad_sequence(values, batch_first=True)
+            elif k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
+                value = torch.cat(values, 0)
+            else:
+                value = values
             new_batch[k] = value
-        new_batch["batch_idx"] = list(new_batch["batch_idx"])
-        for i in range(len(new_batch["batch_idx"])):
-            new_batch["batch_idx"][i] += i  # add target image index for build_targets()
-        new_batch["batch_idx"] = torch.cat(new_batch["batch_idx"], 0)
+        
+        # Handle batch_idx specially - add offset for each batch item
+        if "batch_idx" in new_batch:
+            batch_idx_list = new_batch["batch_idx"]
+            for i in range(len(batch_idx_list)):
+                batch_idx_list[i] = batch_idx_list[i] + i  # add target image index for build_targets()
+            new_batch["batch_idx"] = torch.cat(batch_idx_list, 0)
         return new_batch
 
 
