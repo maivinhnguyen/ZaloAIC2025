@@ -259,6 +259,44 @@ class SiamDetectionTrainer(BaseTrainer):
         log_message += ", ".join([f"{key}={value:.6f}" if isinstance(value, float) else f"{key}={value}" for key, value in metrics.items()])
         LOGGER.info(log_message)
 
+    def visualize_training_samples(self, batch, output_dir="output/visualizations", epoch=0, max_samples=5):
+        """
+        Visualize a limited number of training samples (query and support images) and save to output folder.
+
+        Args:
+            batch (dict): Batch dictionary containing 'query_img', 'support_img', and labels.
+            output_dir (str): Directory to save visualizations.
+            epoch (int): Current epoch number (used for naming files).
+            max_samples (int): Maximum number of samples to visualize.
+        """
+        import os
+        import matplotlib.pyplot as plt
+
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+        query_imgs = batch.get("query_img")
+        support_imgs = batch.get("support_img")
+
+        if query_imgs is not None and support_imgs is not None:
+            for i in range(min(len(query_imgs), max_samples)):
+                fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+                # Plot query image
+                axes[0].imshow(query_imgs[i].cpu().numpy().transpose(1, 2, 0))
+                axes[0].set_title("Query Image")
+                axes[0].axis("off")
+
+                # Plot support image
+                axes[1].imshow(support_imgs[i].cpu().numpy().transpose(1, 2, 0))
+                axes[1].set_title("Support Image")
+                axes[1].axis("off")
+
+                # Save the figure
+                save_path = os.path.join(output_dir, f"epoch_{epoch}_sample_{i}.png")
+                plt.savefig(save_path)
+                plt.close(fig)
+
     def train_epoch(self, epoch):
         """
         Train for a single epoch and log metrics with labels.
@@ -266,7 +304,10 @@ class SiamDetectionTrainer(BaseTrainer):
         Args:
             epoch (int): Current epoch number.
         """
-        # ...existing code for training logic...
+        # Visualize training samples only at the beginning of training (epoch 0)
+        if epoch == 0:
+            batch = next(iter(self.train_loader))  # Example: Get a batch from the dataloader
+            self.visualize_training_samples(batch, epoch=epoch)
 
         # Example metrics dictionary (replace with actual metrics from training loop)
         metrics = {
