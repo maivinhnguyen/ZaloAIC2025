@@ -268,6 +268,7 @@ class YOLODataset(BaseDataset):
                 lb["segments"] = []
         if len_cls == 0:
             LOGGER.warning(f"Labels are missing or empty in {cache_path}, training may not work correctly. {HELP_URL}")
+        print(f"Debug: Loaded labels: {labels}")  # Debugging print
         return labels
 
     def build_transforms(self, hyp: dict | None = None) -> Compose:
@@ -1085,6 +1086,9 @@ class SiamDataset(YOLODataset):
         dataset_root = Path(getattr(self, "dataset_root", Path(label_file).parent.parent)).resolve()
         triplet_data: dict[str, dict[str, Any]] = {}
 
+        # Debug: print first few lines for analysis
+        debug_lines = []
+        
         try:
             with open(label_file, encoding="utf-8", errors="ignore") as lf:
                 for line_idx, raw_line in enumerate(lf):
@@ -1099,11 +1103,35 @@ class SiamDataset(YOLODataset):
                         )
                         continue
 
-                    query_token, support_token = parts[0], parts[1]
+                    query_token = parts[0]
                     query_path = self._resolve_dataset_path(query_token, dataset_root)
+                    
+                    # Find where bbox data starts (first element that's a valid bbox value)
+                    # Bbox data consists of floats. Support image paths should have file extensions or backslashes
+                    bbox_start_idx = 1
+                    support_paths = []
+                    
+                    for idx in range(1, len(parts)):
+                        part = parts[idx]
+                        # Check if this looks like a file path (has / or \ or file extension)
+                        if '/' in part or '\\' in part or '.' in part:
+                            support_paths.append(part)
+                            bbox_start_idx = idx + 1
+                        else:
+                            # Try to parse as float - if successful, we've reached bbox data
+                            try:
+                                float(part)
+                                bbox_start_idx = idx
+                                break
+                            except ValueError:
+                                # Not a number, might be another path
+                                support_paths.append(part)
+                                bbox_start_idx = idx + 1
+                    
+                    # Use only the first support image
                     support_path = None
-                    if support_token.lower() not in {"", "none", "null"}:
-                        candidate_support = self._resolve_dataset_path(support_token, dataset_root)
+                    if support_paths and support_paths[0].lower() not in {"", "none", "null"}:
+                        candidate_support = self._resolve_dataset_path(support_paths[0], dataset_root)
                         if candidate_support.exists():
                             support_path = candidate_support
                         else:
@@ -1111,16 +1139,38 @@ class SiamDataset(YOLODataset):
                                 f"{self.prefix}Support image missing for {query_path}: {candidate_support}"
                             )
 
+                    bbox_data = parts[bbox_start_idx:] if bbox_start_idx < len(parts) else []
                     triplet_data[str(query_path)] = {
                         "support": str(support_path) if support_path else None,
-                        "boxes": parts[2:] if len(parts) > 2 else [],
+                        "boxes": bbox_data,
                     }
+                    
+                    # Also add by filename only for matching later (in case full paths don't match due to ordering)
+                    query_filename = query_path.name
+                    triplet_data[query_filename] = {
+                        "support": str(support_path) if support_path else None,
+                        "boxes": bbox_data,
+                    }
+                    
+                    # Debug first few lines
+                    if line_idx < 3:
+                        debug_lines.append(f"  Line {line_idx}: query={Path(query_path).name}, bbox_start={bbox_start_idx}, bbox_count={len(bbox_data)//5 if len(bbox_data)%5==0 else 'invalid'}")
         except Exception as exc:
             LOGGER.warning(f"{self.prefix}Error reading label file {label_file}: {exc}")
+        
+        if debug_lines:
+            LOGGER.info(f"{self.prefix}Label parsing debug:\n" + "\n".join(debug_lines))
 
         for im_file in self.im_files:
             im_path = Path(im_file).resolve()
+            
+            # Try to find triplet info by full path first, then by filename only
             triplet_info = triplet_data.get(str(im_path))
+            if triplet_info is None:
+                # Try matching by filename only
+                im_filename = im_path.name
+                triplet_info = triplet_data.get(im_filename)
+            
             if triplet_info is None:
                 nm += 1
                 triplet_info = {"support": None, "boxes": []}

@@ -775,7 +775,7 @@ def plot_images(
     if scale < 1:
         h = math.ceil(scale * h)
         w = math.ceil(scale * w)
-        mosaic = cv2.resize(mosaic, tuple(int(x * ns) for x in (w, h)))
+        mosaic = cv2.resize(mosaic, tuple(int(x * ns) for x in (w, h)))  # Ensure valid tuple
 
     # Annotate
     fs = int((h + w) * ns * 0.01)  # font size

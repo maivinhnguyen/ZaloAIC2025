@@ -274,28 +274,36 @@ class SiamDetectionTrainer(BaseTrainer):
         from pathlib import Path
 
         # Get images from batch
-        query_imgs = batch.get("query_img")
+        query_imgs = batch.get("query_img", batch.get("img"))  # Fall back to img if query_img not present
         support_imgs = batch.get("support_img")
 
-        if query_imgs is not None and support_imgs is not None:
+        if query_imgs is not None:
             # Prepare output directory
             output_dir = Path(self.save_dir) / "train_batch_plots"
             output_dir.mkdir(parents=True, exist_ok=True)
 
+            # Get labels from batch
+            bboxes = batch.get("bboxes")
+            cls_labels = batch.get("cls")
+            batch_idx = batch.get("batch_idx")
+            
+            # Ensure bboxes and cls are proper tensors, not None
+            if bboxes is None:
+                bboxes = torch.zeros((0, 4), dtype=torch.float32, device=query_imgs.device)
+            if cls_labels is None:
+                cls_labels = torch.zeros((0, 1), dtype=torch.float32, device=query_imgs.device)
+            if batch_idx is None:
+                batch_idx = torch.zeros(len(bboxes), dtype=torch.long, device=query_imgs.device)
+
             # Query batch: Has bounding boxes (what we're looking for)
             query_batch = {
                 "img": query_imgs,
-                "cls": batch.get("cls"),
-                "bboxes": batch.get("bboxes"),
+                "cls": cls_labels,
+                "bboxes": bboxes,
+                "batch_idx": batch_idx,
+                "im_file": batch.get("im_file", []),
             }
             
-            # Support batch: NO bounding boxes (just reference images)
-            support_batch = {
-                "img": support_imgs,
-                "cls": None,  # Support images have no labels
-                "bboxes": None,  # Support images have no bboxes
-            }
-
             # Plot query images with bounding boxes
             try:
                 plot_images(
@@ -307,14 +315,22 @@ class SiamDetectionTrainer(BaseTrainer):
                 LOGGER.warning(f"Failed to plot query images: {e}")
 
             # Plot support images WITHOUT bounding boxes
-            try:
-                plot_images(
-                    labels=support_batch,
-                    fname=str(output_dir / f"train_batch_support_{ni}.jpg"),
-                    on_plot=self.on_plot,
-                )
-            except Exception as e:
-                LOGGER.warning(f"Failed to plot support images: {e}")
+            if support_imgs is not None:
+                try:
+                    support_batch = {
+                        "img": support_imgs,
+                        "cls": torch.zeros((0, 1), dtype=torch.float32, device=support_imgs.device),
+                        "bboxes": torch.zeros((0, 4), dtype=torch.float32, device=support_imgs.device),
+                        "batch_idx": torch.zeros(0, dtype=torch.long, device=support_imgs.device),
+                        "im_file": batch.get("support_file", []),
+                    }
+                    plot_images(
+                        labels=support_batch,
+                        fname=str(output_dir / f"train_batch_support_{ni}.jpg"),
+                        on_plot=self.on_plot,
+                    )
+                except Exception as e:
+                    LOGGER.warning(f"Failed to plot support images: {e}")
 
     def visualize_training_samples(self, batch, output_dir=None, epoch=0, max_samples=5):
         """

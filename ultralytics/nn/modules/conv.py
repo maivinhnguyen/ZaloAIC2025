@@ -680,7 +680,26 @@ class Concat(nn.Module):
         Returns:
             (torch.Tensor): Concatenated tensor.
         """
-        return torch.cat(x, self.d)
+        # Debugging: Print shapes of tensors in x
+        for i, tensor in enumerate(x):
+            print(f"Tensor {i} shape: {tensor.shape}")
+
+        # Align tensor sizes before concatenation
+        max_h = max(tensor.shape[2] for tensor in x)  # Maximum height
+        max_w = max(tensor.shape[3] for tensor in x)  # Maximum width
+
+        aligned_tensors = []
+        for tensor in x:
+            h, w = tensor.shape[2], tensor.shape[3]
+            if h != max_h or w != max_w:
+                # Pad tensor to match max dimensions
+                pad_h = (0, max_h - h)
+                pad_w = (0, max_w - w)
+                tensor = torch.nn.functional.pad(tensor, pad_w + pad_h)  # Pad width and height
+            aligned_tensors.append(tensor)
+
+        # Perform concatenation
+        return torch.cat(aligned_tensors, self.d)
 
 
 class Index(nn.Module):
