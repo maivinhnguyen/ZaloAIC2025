@@ -208,11 +208,12 @@ class Compose:
                 skip_augmentation = True
         
         if skip_augmentation:
-            # For empty labels, only apply Format and other non-augmentation transforms
+            # For empty labels, only apply essential transforms (resizing, formatting)
+            # Skip augmentation but NOT sizing transforms
             for t in self.transforms:
-                # Skip augmentation transforms, only apply Format
+                # Skip augmentation transforms only, NOT LetterBox or Format
                 if t.__class__.__name__ in ('RandomFlip', 'RandomPerspective', 'RandomHSV', 
-                                           'RandomGrayscale', 'RandomAutoAugment', 'LetterBox', 'RandomLoadText',
+                                           'RandomGrayscale', 'RandomAutoAugment', 'RandomLoadText',
                                            'Mosaic', 'MixUp', 'CopyPaste'):
                     continue
                 data = t(data)
