@@ -247,6 +247,40 @@ class SiamDetectionTrainer(BaseTrainer):
         """Return a formatted training progress string."""
         return ""  # Progress is displayed via pbar.set_description in _do_train
 
+    def log_metrics(self, epoch, metrics):
+        """
+        Log training metrics for the current epoch.
+
+        Args:
+            epoch (int): Current epoch number.
+            metrics (dict): Dictionary containing metric names and their values.
+        """
+        log_message = f"Epoch {epoch}: "
+        log_message += ", ".join([f"{key}={value:.4f}" for key, value in metrics.items()])
+        LOGGER.info(log_message)
+
+    def train_epoch(self, epoch):
+        """
+        Train for a single epoch and log metrics.
+
+        Args:
+            epoch (int): Current epoch number.
+        """
+        # ...existing code for training logic...
+
+        # Example metrics dictionary (replace with actual metrics from training loop)
+        metrics = {
+            "iou_loss": self.tloss[0],
+            "bce_loss": self.tloss[1],
+            "rpl_loss": self.tloss[2],
+            "dice_loss": self.tloss[3],
+            "dfl_loss": self.tloss[4],
+            "learning_rate": self.optimizer.param_groups[0]['lr']
+        }
+
+        # Log metrics at the end of the epoch
+        self.log_metrics(epoch, metrics)
+
 
 class SiamDetectionValidator(BaseValidator):
     """
