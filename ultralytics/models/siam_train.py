@@ -266,6 +266,10 @@ class SiamDetectionTrainer(BaseTrainer):
         Args:
             batch (dict): Batch dictionary containing 'query_img', 'support_img', and labels.
             ni (int): Batch iteration index.
+            
+        Note:
+            - Query images are plotted with bounding boxes (what to find)
+            - Support images are plotted without bounding boxes (reference images)
         """
         from pathlib import Path
 
@@ -278,20 +282,21 @@ class SiamDetectionTrainer(BaseTrainer):
             output_dir = Path(self.save_dir) / "train_batch_plots"
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create batch dicts for plotting query and support images separately
+            # Query batch: Has bounding boxes (what we're looking for)
             query_batch = {
                 "img": query_imgs,
                 "cls": batch.get("cls"),
                 "bboxes": batch.get("bboxes"),
             }
             
+            # Support batch: NO bounding boxes (just reference images)
             support_batch = {
                 "img": support_imgs,
-                "cls": batch.get("cls"),
-                "bboxes": batch.get("bboxes"),
+                "cls": None,  # Support images have no labels
+                "bboxes": None,  # Support images have no bboxes
             }
 
-            # Plot query images
+            # Plot query images with bounding boxes
             try:
                 plot_images(
                     labels=query_batch,
@@ -301,7 +306,7 @@ class SiamDetectionTrainer(BaseTrainer):
             except Exception as e:
                 LOGGER.warning(f"Failed to plot query images: {e}")
 
-            # Plot support images
+            # Plot support images WITHOUT bounding boxes
             try:
                 plot_images(
                     labels=support_batch,
@@ -320,9 +325,14 @@ class SiamDetectionTrainer(BaseTrainer):
             output_dir (str): Directory to save visualizations. Defaults to self.save_dir.
             epoch (int): Current epoch number (used for naming files).
             max_samples (int): Maximum number of samples to visualize.
+            
+        Note:
+            - Query images show with bounding boxes (target object to find)
+            - Support images show without bounding boxes (reference images showing the object)
         """
         import os
         import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
 
         # Use the training save directory if output_dir is not provided
         output_dir = output_dir or os.path.join(self.save_dir, "visualizations")
@@ -331,24 +341,52 @@ class SiamDetectionTrainer(BaseTrainer):
 
         query_imgs = batch.get("query_img")
         support_imgs = batch.get("support_img")
+        bboxes = batch.get("bboxes")
+        cls_labels = batch.get("cls")
 
         if query_imgs is not None and support_imgs is not None:
             for i in range(min(len(query_imgs), max_samples)):
-                fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+                fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-                # Plot query image
-                axes[0].imshow(query_imgs[i].cpu().numpy().transpose(1, 2, 0))
-                axes[0].set_title("Query Image")
+                # Plot query image with bounding box
+                query_img_vis = query_imgs[i].cpu().numpy().transpose(1, 2, 0)
+                query_img_vis = (query_img_vis * 255).astype('uint8') if query_img_vis.max() <= 1 else query_img_vis.astype('uint8')
+                
+                axes[0].imshow(query_img_vis)
+                axes[0].set_title(f"Query Image (target to find) - Sample {i}")
                 axes[0].axis("off")
+                
+                # Draw bounding box on query image if available
+                if bboxes is not None and len(bboxes) > i:
+                    bbox = bboxes[i]
+                    if bbox.numel() > 0:  # Check if bbox is not empty
+                        # Assuming normalized coordinates (xywh format)
+                        h, w = query_img_vis.shape[:2]
+                        x_center, y_center, bbox_w, bbox_h = bbox[:4]
+                        x1 = (x_center - bbox_w / 2) * w
+                        y1 = (y_center - bbox_h / 2) * h
+                        x2 = (x_center + bbox_w / 2) * w
+                        y2 = (y_center + bbox_h / 2) * h
+                        rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, linewidth=2, edgecolor='r', facecolor='none')
+                        axes[0].add_patch(rect)
+                        
+                        # Add class label if available
+                        if cls_labels is not None and len(cls_labels) > i:
+                            class_idx = int(cls_labels[i].item()) if cls_labels[i].numel() > 0 else 0
+                            class_name = self.data.get("names", {}).get(class_idx, f"class_{class_idx}")
+                            axes[0].text(x1, y1 - 5, class_name, color='red', fontsize=10, bbox=dict(facecolor='yellow', alpha=0.5))
 
-                # Plot support image
-                axes[1].imshow(support_imgs[i].cpu().numpy().transpose(1, 2, 0))
-                axes[1].set_title("Support Image")
+                # Plot support image WITHOUT bounding box (it's just a reference)
+                support_img_vis = support_imgs[i].cpu().numpy().transpose(1, 2, 0)
+                support_img_vis = (support_img_vis * 255).astype('uint8') if support_img_vis.max() <= 1 else support_img_vis.astype('uint8')
+                
+                axes[1].imshow(support_img_vis)
+                axes[1].set_title(f"Support Image (reference) - Sample {i}")
                 axes[1].axis("off")
 
                 # Save the figure
                 save_path = os.path.join(output_dir, f"epoch_{epoch}_sample_{i}.png")
-                plt.savefig(save_path)
+                plt.savefig(save_path, bbox_inches='tight', dpi=100)
                 plt.close(fig)
                 LOGGER.info(f"Saved visualization: {save_path}")
 

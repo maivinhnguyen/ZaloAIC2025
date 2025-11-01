@@ -1182,6 +1182,10 @@ class SiamDataset(YOLODataset):
 
         Returns:
             (dict): Dictionary containing 'query_img', 'support_img', and label information.
+            
+        Note:
+            - Query image: Has bounding box labels (what to find)
+            - Support image: Has NO labels (just shows reference object)
         """
         raw_label = deepcopy(self.labels[index])
         raw_label.pop("shape", None)
@@ -1207,6 +1211,12 @@ class SiamDataset(YOLODataset):
         support_label["ori_shape"] = support_img.shape[:2]
         support_label["resized_shape"] = support_img.shape[:2]
         support_label["ratio_pad"] = (1.0, 1.0)
+        
+        # IMPORTANT: Clear labels from support image (support has no boxes, only query does)
+        support_label["cls"] = np.zeros((0, 1), dtype=np.float32)
+        support_label["bboxes"] = np.zeros((0, 4), dtype=np.float32)
+        support_label["segments"] = []
+        support_label["keypoints"] = None
 
         if self.transforms:
             rng_state_before = self._capture_rng_state()
@@ -1237,11 +1247,10 @@ class SiamDataset(YOLODataset):
             if "instances" in support_data:
                 instances = support_data.pop("instances")
                 nl = len(instances)
-                support_data["bboxes"] = torch.from_numpy(instances.bboxes).float() if nl else torch.zeros((0, 4), dtype=torch.float32)
-                support_data["batch_idx"] = torch.zeros(nl, dtype=torch.long)
-                # cls is stored separately in label dict, not in instances
-                if "cls" in support_data:
-                    support_data["cls"] = torch.from_numpy(support_data["cls"]).float() if nl else torch.zeros((0, 1), dtype=torch.float32)
+                # Support data should NOT have labels
+                support_data["bboxes"] = torch.zeros((0, 4), dtype=torch.float32)
+                support_data["batch_idx"] = torch.zeros(0, dtype=torch.long)
+                support_data["cls"] = torch.zeros((0, 1), dtype=torch.float32)
 
         output = query_data
         output["support_img"] = support_data["img"]
