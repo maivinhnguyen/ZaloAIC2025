@@ -1225,6 +1225,19 @@ class SiamDataset(YOLODataset):
             self._restore_rng_state(rng_state_before)
             support_data = self.transforms(deepcopy(support_label))
             self._restore_rng_state(rng_state_after_query)
+            
+            # Ensure support image has same size as query image for batching
+            if "img" in query_data and "img" in support_data:
+                query_h, query_w = query_data["img"].shape[-2:]
+                support_h, support_w = support_data["img"].shape[-2:]
+                if (query_h, query_w) != (support_h, support_w):
+                    # Resize support to match query using interpolation
+                    support_data["img"] = torch.nn.functional.interpolate(
+                        support_data["img"].unsqueeze(0), 
+                        size=(query_h, query_w),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze(0)
         else:
             # When no transforms, manually extract bboxes and cls from instances
             query_data = deepcopy(label)
