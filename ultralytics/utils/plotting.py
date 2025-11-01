@@ -800,18 +800,18 @@ def plot_images(
                         boxes[..., [1, 3]] *= h
                     elif scale < 1:  # absolute coords need scale if image scales
                         boxes[..., :4] *= scale
-                boxes[..., 0] += x
-                boxes[..., 1] += y
-                is_obb = boxes.shape[-1] == 5  # xywhr
-                # TODO: this transformation might be unnecessary
-                boxes = ops.xywhr2xyxyxyxy(boxes) if is_obb else ops.xywh2xyxy(boxes)
-                for j, box in enumerate(boxes.astype(np.int64).tolist()):
-                    c = classes[j]
-                    color = colors(c)
-                    c = names.get(c, c) if names else c
-                    if labels or conf[j] > conf_thres:
-                        label = f"{c}" if labels else f"{c} {conf[j]:.1f}"
-                        annotator.box_label(box, label, color=color)
+                    boxes[..., 0] += x
+                    boxes[..., 1] += y
+                    is_obb = boxes.shape[-1] == 5  # xywhr
+                    # TODO: this transformation might be unnecessary
+                    boxes = ops.xywhr2xyxyxyxy(boxes) if is_obb else ops.xywh2xyxy(boxes)
+                    for j, box in enumerate(boxes.astype(np.int64).tolist()):
+                        c = classes[j]
+                        color = colors(c)
+                        c = names.get(c, c) if names else c
+                        if labels or conf[j] > conf_thres:
+                            label = f"{c}" if labels else f"{c} {conf[j]:.1f}"
+                            annotator.box_label(box, label, color=color)
 
             elif len(classes):
                 for c in classes:
@@ -829,11 +829,11 @@ def plot_images(
                         kpts_[..., 1] *= h
                     elif scale < 1:  # absolute coords need scale if image scales
                         kpts_ *= scale
-                kpts_[..., 0] += x
-                kpts_[..., 1] += y
-                for j in range(len(kpts_)):
-                    if labels or conf[j] > conf_thres:
-                        annotator.kpts(kpts_[j], conf_thres=conf_thres)
+                    kpts_[..., 0] += x
+                    kpts_[..., 1] += y
+                    for j in range(len(kpts_)):
+                        if labels or conf[j] > conf_thres:
+                            annotator.kpts(kpts_[j], conf_thres=conf_thres)
 
             # Plot masks
             if len(masks):
