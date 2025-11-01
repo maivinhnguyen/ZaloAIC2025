@@ -309,10 +309,13 @@ class SiamDetectionTrainer(BaseTrainer):
                 plot_images(
                     labels=query_batch,
                     fname=str(output_dir / f"train_batch_query_{ni}.jpg"),
+                    names=self.data.get("names", None),
                     on_plot=self.on_plot,
                 )
             except Exception as e:
                 LOGGER.warning(f"Failed to plot query images: {e}")
+                import traceback
+                LOGGER.warning(f"Traceback: {traceback.format_exc()}")
 
             # Plot support images WITHOUT bounding boxes
             if support_imgs is not None:
@@ -327,10 +330,13 @@ class SiamDetectionTrainer(BaseTrainer):
                     plot_images(
                         labels=support_batch,
                         fname=str(output_dir / f"train_batch_support_{ni}.jpg"),
+                        names=self.data.get("names", None),
                         on_plot=self.on_plot,
                     )
                 except Exception as e:
                     LOGGER.warning(f"Failed to plot support images: {e}")
+                    import traceback
+                    LOGGER.warning(f"Traceback: {traceback.format_exc()}")
 
     def visualize_training_samples(self, batch, output_dir=None, epoch=0, max_samples=5):
         """

@@ -767,7 +767,7 @@ def plot_images(
     # Build Image
     mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init
     for i in range(bs):
-        x, y = int(w * (i // ns)), int(h * (i % ns))  # block origin
+        x, y = int(w * (i % ns)), int(h * (i // ns))  # block origin - column, row
         mosaic[y : y + h, x : x + w, :] = images[i].transpose(1, 2, 0)
 
     # Resize (optional)
@@ -782,7 +782,7 @@ def plot_images(
     fs = max(fs, 18)  # ensure that the font size is large enough to be easily readable.
     annotator = Annotator(mosaic, line_width=round(fs / 10), font_size=fs, pil=True, example=str(names))
     for i in range(bs):
-        x, y = int(w * (i // ns)), int(h * (i % ns))  # block origin
+        x, y = int(w * (i % ns)), int(h * (i // ns))  # block origin - column, row
         annotator.rectangle([x, y, x + w, y + h], None, (255, 255, 255), width=2)  # borders
         if paths:
             annotator.text([x + 5, y + 5], text=Path(paths[i]).name[:40], txt_color=(220, 220, 220))  # filenames
@@ -808,7 +808,9 @@ def plot_images(
                     for j, box in enumerate(boxes.astype(np.int64).tolist()):
                         c = classes[j]
                         color = colors(c)
-                        c = names.get(c, c) if names else c
+                        # Handle both dict and list for names
+                        if names:
+                            c = names.get(c, c) if isinstance(names, dict) else (names[c] if c < len(names) else c)
                         if labels or conf[j] > conf_thres:
                             label = f"{c}" if labels else f"{c} {conf[j]:.1f}"
                             annotator.box_label(box, label, color=color)
@@ -816,7 +818,9 @@ def plot_images(
             elif len(classes):
                 for c in classes:
                     color = colors(c)
-                    c = names.get(c, c) if names else c
+                    # Handle both dict and list for names
+                    if names:
+                        c = names.get(c, c) if isinstance(names, dict) else (names[c] if c < len(names) else c)
                     label = f"{c}" if labels else f"{c} {conf[0]:.1f}"
                     annotator.text([x, y], label, txt_color=color, box_color=(64, 64, 64, 128))
 
