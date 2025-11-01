@@ -1277,9 +1277,21 @@ class SiamDataset(YOLODataset):
         Handles variable-sized images by padding them to the maximum size in the batch before stacking.
         This prevents RuntimeError from torch.stack when images have different dimensions.
         """
+        if len(batch) == 0:
+            return {}
+        
+        # Extract Siamese-specific keys before calling parent collate_fn
+        support_imgs = []
+        support_files = []
+        
+        for item in batch:
+            if "support_img" in item:
+                support_imgs.append(item.pop("support_img"))
+            if "support_file" in item:
+                support_files.append(item.pop("support_file"))
+        
         # Handle the case where images might have different sizes
         # Normalize all images to the same size before calling parent collate_fn
-        
         if len(batch) > 0 and "img" in batch[0]:
             # Find the maximum dimensions for images
             max_h, max_w = 0, 0
@@ -1301,23 +1313,35 @@ class SiamDataset(YOLODataset):
                             pad_w = max_w - w
                             # pad format: (left, right, top, bottom) for 2D
                             item["img"] = torch.nn.functional.pad(item["img"], (0, pad_w, 0, pad_h), value=0.0)
-                    
-                    # Also pad support images to match query dimensions
-                    if isinstance(item.get("support_img"), torch.Tensor):
-                        _, h, w = item["support_img"].shape
+        
+        # Pad support images as well
+        if len(support_imgs) > 0:
+            max_h, max_w = 0, 0
+            for img in support_imgs:
+                if isinstance(img, torch.Tensor) and len(img.shape) == 3:
+                    _, h, w = img.shape
+                    max_h = max(max_h, h)
+                    max_w = max(max_w, w)
+            
+            if max_h > 0 and max_w > 0:
+                for i in range(len(support_imgs)):
+                    img = support_imgs[i]
+                    if isinstance(img, torch.Tensor):
+                        _, h, w = img.shape
                         if (h, w) != (max_h, max_w):
                             pad_h = max_h - h
                             pad_w = max_w - w
-                            item["support_img"] = torch.nn.functional.pad(item["support_img"], (0, pad_w, 0, pad_h), value=0.0)
+                            support_imgs[i] = torch.nn.functional.pad(img, (0, pad_w, 0, pad_h), value=0.0)
         
         # Call parent collate_fn to handle stacking and other processing
         collated = YOLODataset.collate_fn(batch)
         
-        # Handle support images
-        if "support_img" in collated:
-            support_imgs = collated["support_img"]
-            if isinstance(support_imgs, (list, tuple)):
-                collated["support_img"] = torch.stack(list(support_imgs), 0)
+        # Add back Siamese-specific data after parent processing
+        if len(support_imgs) > 0:
+            collated["support_img"] = torch.stack(support_imgs, 0)
+        
+        if len(support_files) > 0:
+            collated["support_file"] = support_files
         
         # Alias img as query_img for clarity
         if "img" in collated and "query_img" not in collated:
