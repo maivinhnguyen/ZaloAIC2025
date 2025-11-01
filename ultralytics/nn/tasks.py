@@ -734,6 +734,21 @@ class SiamDetectionModel(DetectionModel):
         if self.training or support_img is not None:
             batch_size = query_img.shape[0]
             
+            # Verify both images have identical spatial dimensions
+            if query_img.shape[2:] != support_img.shape[2:]:
+                LOGGER.warning(
+                    f"Query and support image size mismatch detected! "
+                    f"Query: {query_img.shape}, Support: {support_img.shape}. "
+                    f"Resizing support to match query."
+                )
+                # Resize support image to match query dimensions exactly
+                support_img = torch.nn.functional.interpolate(
+                    support_img,
+                    size=query_img.shape[2:],
+                    mode='bilinear',
+                    align_corners=False
+                )
+            
             # Concatenate query and support images along batch dimension
             # This ensures both go through identical operations and produce matching spatial dims
             combined_imgs = torch.cat([query_img, support_img], dim=0)
