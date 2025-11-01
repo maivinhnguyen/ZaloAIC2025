@@ -680,10 +680,6 @@ class Concat(nn.Module):
         Returns:
             (torch.Tensor): Concatenated tensor.
         """
-        # Debugging: Print shapes of tensors in x
-        for i, tensor in enumerate(x):
-            print(f"Tensor {i} shape: {tensor.shape}")
-
         # Align tensor sizes before concatenation
         max_h = max(tensor.shape[2] for tensor in x)  # Maximum height
         max_w = max(tensor.shape[3] for tensor in x)  # Maximum width
