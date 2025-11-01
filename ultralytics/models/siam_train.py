@@ -259,20 +259,21 @@ class SiamDetectionTrainer(BaseTrainer):
         log_message += ", ".join([f"{key}={value:.6f}" if isinstance(value, float) else f"{key}={value}" for key, value in metrics.items()])
         LOGGER.info(log_message)
 
-    def visualize_training_samples(self, batch, output_dir="output/visualizations", epoch=0, max_samples=5):
+    def visualize_training_samples(self, batch, output_dir=None, epoch=0, max_samples=5):
         """
         Visualize a limited number of training samples (query and support images) and save to output folder.
 
         Args:
             batch (dict): Batch dictionary containing 'query_img', 'support_img', and labels.
-            output_dir (str): Directory to save visualizations.
+            output_dir (str): Directory to save visualizations. Defaults to self.save_dir.
             epoch (int): Current epoch number (used for naming files).
             max_samples (int): Maximum number of samples to visualize.
         """
         import os
         import matplotlib.pyplot as plt
 
-        # Ensure output directory exists
+        # Use the training save directory if output_dir is not provided
+        output_dir = output_dir or os.path.join(self.save_dir, "visualizations")
         os.makedirs(output_dir, exist_ok=True)
 
         query_imgs = batch.get("query_img")
@@ -321,6 +322,7 @@ class SiamDetectionTrainer(BaseTrainer):
 
         # Log metrics at the end of the epoch
         self.log_metrics(epoch, metrics)
+        LOGGER.info(f"Metrics logged for epoch {epoch}")
 
 
 class SiamDetectionValidator(BaseValidator):
