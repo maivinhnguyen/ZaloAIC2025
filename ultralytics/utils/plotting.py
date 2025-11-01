@@ -800,11 +800,12 @@ def plot_images(
                         boxes[..., [1, 3]] *= h
                     elif scale < 1:  # absolute coords need scale if image scales
                         boxes[..., :4] *= scale
-                    boxes[..., 0] += x
-                    boxes[..., 1] += y
                     is_obb = boxes.shape[-1] == 5  # xywhr
-                    # TODO: this transformation might be unnecessary
+                    # Convert to xyxy format BEFORE adding offset
                     boxes = ops.xywhr2xyxyxyxy(boxes) if is_obb else ops.xywh2xyxy(boxes)
+                    # Now add offset to corner coordinates
+                    boxes[..., [0, 2]] += x  # add x offset to x1 and x2
+                    boxes[..., [1, 3]] += y  # add y offset to y1 and y2
                     for j, box in enumerate(boxes.astype(np.int64).tolist()):
                         c = classes[j]
                         color = colors(c)
