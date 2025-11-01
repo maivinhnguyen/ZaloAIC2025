@@ -388,6 +388,11 @@ class BaseMixTransform:
         if random.uniform(0, 1) > self.p:
             return labels
 
+        # Skip mix transform if labels are empty (e.g., support images in Siamese networks)
+        cls = labels.get("cls")
+        if cls is None or (hasattr(cls, '__len__') and len(cls) == 0):
+            return labels
+
         # Get index of one or three other images
         indexes = self.get_indexes()
         if isinstance(indexes, int):
