@@ -1,3 +1,8 @@
+import sys
+import os
+# Ensure local ultralytics is used instead of pip-installed version
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from ultralytics.models.siam_train import SiamDetectionTrainer
 import argparse
 import multiprocessing
