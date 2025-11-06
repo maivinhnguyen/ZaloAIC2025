@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--imgsz', type=int, default=640, help='Input image size')
     parser.add_argument('--batch', type=int, default=16, help='Batch size')
-    parser.add_argument('--device', type=int, default=0, help='GPU device ID')
+    parser.add_argument('--device', type=str, default=0, help='GPU device ID')
     parser.add_argument('--model', type=str, default='yolo11n.yaml', help='Model configuration file')
 
     args = parser.parse_args()
