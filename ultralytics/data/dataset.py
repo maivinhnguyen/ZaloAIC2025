@@ -167,8 +167,15 @@ class YOLODataset(BaseDataset):
             "numpy": np.random.get_state(),
             "torch": torch.get_rng_state(),
         }
-        if torch.cuda.is_available():
-            state["cuda"] = torch.cuda.get_rng_state_all()
+        # Important: In DataLoader worker processes on Linux the start method is often 'fork'.
+        # Calling CUDA APIs in a forked subprocess before CUDA is initialized will error.
+        # Guard with is_initialized() to avoid lazy-initializing CUDA in workers.
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            try:
+                state["cuda"] = torch.cuda.get_rng_state_all()
+            except Exception:
+                # Skip capturing CUDA RNG state if it is unsafe in this process context.
+                pass
         return state
 
     @staticmethod
@@ -177,8 +184,12 @@ class YOLODataset(BaseDataset):
         random.setstate(state["python"])
         np.random.set_state(state["numpy"])
         torch.set_rng_state(state["torch"])
-        if "cuda" in state and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(state["cuda"])
+        if "cuda" in state and torch.cuda.is_available() and torch.cuda.is_initialized():
+            try:
+                torch.cuda.set_rng_state_all(state["cuda"])
+            except Exception:
+                # If CUDA can't be safely set in this process, continue without failing.
+                pass
 
     def _resolve_dataset_path(self, path_value: str | Path, dataset_root: Path | None = None) -> Path:
         """Resolve dataset-relative paths to absolute paths."""
