@@ -1,11 +1,19 @@
 import sys
 import os
-# Ensure local ultralytics is used instead of pip-installed version
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from ultralytics.models.siam_train import SiamDetectionTrainer
 import argparse
 import multiprocessing
+
+# Ensure local ultralytics is importable before any ultralytics imports
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# Also propagate the project root to child processes (DDP spawns separate Python interpreters)
+os.environ["PYTHONPATH"] = (
+    PROJECT_ROOT + (os.pathsep + os.environ.get("PYTHONPATH", "") if os.environ.get("PYTHONPATH") else "")
+)
+
+from ultralytics.models.siam_train import SiamDetectionTrainer
 
 def train(data, model, epochs, imgsz, batch, device):
     trainer = SiamDetectionTrainer(overrides={
@@ -27,7 +35,7 @@ def main():
     parser.add_argument('--imgsz', type=int, default=640, help='Input image size')
     parser.add_argument('--batch', type=int, default=16, help='Batch size')
     parser.add_argument('--device', type=str, default=0, help='GPU device ID')
-    parser.add_argument('--model', type=str, default='yolo11n.yaml', help='Model configuration file')
+    parser.add_argument('--model', type=str, default='yolo11n.pt', help='Model configuration file')
 
     args = parser.parse_args()
     train(data=args.data, model=args.model, epochs=args.epochs, 
