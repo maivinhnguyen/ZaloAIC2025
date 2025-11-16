@@ -53,7 +53,7 @@ Examples:
     # Inference settings
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"],
                         help="Device to use (default: cuda)")
-    parser.add_argument("--conf", type=float, default=0.5,
+    parser.add_argument("--conf", type=float, default=0.8,
                         help="Confidence threshold (default: 0.5)")
     parser.add_argument("--iou", type=float, default=0.45,
                         help="IOU threshold (default: 0.45)")

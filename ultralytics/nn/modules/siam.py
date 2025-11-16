@@ -23,7 +23,7 @@ class MatchingModule(nn.Module):
     - Q is the query feature map
     - S is the support feature map
     - × denotes element-wise multiplication
-    - s denotes a sigmoid activation
+    - s denotes a softmax activation
     - + denotes element-wise addition
 
     This module has no learnable parameters and operates on feature maps of arbitrary dimensions.
@@ -60,15 +60,18 @@ class MatchingModule(nn.Module):
             torch.Tensor: Fused feature map of shape (B, C, H, W)
 
         Notes:
-            The formula is: Output = Query + Sigmoid(Query * Support) * Support
-            This allows the model to learn to weight and combine features adaptively
-            without introducing additional learnable parameters.
+            The formula is: Output = Query + Softmax(Query * Support) * Support
+            Softmax is applied over the spatial dimension (H*W) for each channel independently.
         """
         # Element-wise multiplication between query and support
         element_mult = query * support
 
-        # Apply sigmoid activation to the element-wise multiplication
-        attention = torch.sigmoid(element_mult)
+        # Apply softmax activation over spatial dimensions (H*W)
+        # For each batch and channel, compute softmax across spatial locations
+        B, C, H, W = element_mult.shape
+        element_mult_flat = element_mult.view(B, C, -1)  # (B, C, H*W)
+        attention_flat = F.softmax(element_mult_flat, dim=2)  # Softmax over spatial dimension (H*W)
+        attention = attention_flat.view(B, C, H, W)  # Reshape back
 
         # Weight the support features by the attention map
         weighted_support = attention * support

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from typing import Any
 
 import torch
@@ -869,24 +870,28 @@ class RatioPreservingLoss(nn.Module):
         Calculate Ratio-Preserving Loss.
 
         Args:
-            pred (torch.Tensor): Predicted bounding boxes in format (x, y, w, h).
-            target (torch.Tensor): Target bounding boxes in format (x, y, w, h).
+            pred (torch.Tensor): Predicted bounding boxes in xyxy format (x1, y1, x2, y2).
+            target (torch.Tensor): Target bounding boxes in xyxy format (x1, y1, x2, y2).
 
         Returns:
             torch.Tensor: Scalar loss value.
         """
-        # Extract width and height components
-        pred_w = pred[..., 2]
-        pred_h = pred[..., 3]
-        target_w = target[..., 2]
-        target_h = target[..., 3]
+        # Convert xyxy to width and height
+        pred_w = pred[..., 2] - pred[..., 0]
+        pred_h = pred[..., 3] - pred[..., 1]
+        target_w = target[..., 2] - target[..., 0]
+        target_h = target[..., 3] - target[..., 1]
 
-        # Calculate aspect ratios
+        # Calculate aspect ratios (add epsilon to prevent division by zero)
         pred_ratio = pred_w / (pred_h + 1e-8)
         target_ratio = target_w / (target_h + 1e-8)
 
         # Calculate ratio-preserving loss using log difference
-        ratio_loss = F.smooth_l1_loss(torch.log(pred_ratio), torch.log(target_ratio))
+        # Add epsilon to ratios before log to prevent log(0)
+        ratio_loss = F.smooth_l1_loss(
+            torch.log(pred_ratio + 1e-8), 
+            torch.log(target_ratio + 1e-8)
+        )
         return ratio_loss
 
 
@@ -972,13 +977,15 @@ class SiamLoss(v8DetectionLoss):
         Calculate the SiamYOLOv8 composite loss.
 
         Args:
-            preds (Any): Model predictions.
+            preds (Any): Model predictions (tuple with predictions and features).
             batch (dict): Batch data including images, labels, and targets.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Total loss and component losses.
         """
-        loss = torch.zeros(5, device=self.device)  # iou, bce, rpl, dice, dfl
+        if isinstance(preds, dict):
+            preds = preds.get('predictions', preds)
+        
         feats = preds[1] if isinstance(preds, tuple) else preds
         pred_distri, pred_scores = torch.cat(
             [xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2
@@ -989,6 +996,9 @@ class SiamLoss(v8DetectionLoss):
 
         dtype = pred_scores.dtype
         batch_size = pred_scores.shape[0]
+        
+        # Initialize loss tensor with correct dtype to avoid NaN in mixed precision
+        loss = torch.zeros(6, device=self.device, dtype=dtype)
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]
         anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
 
@@ -1017,14 +1027,14 @@ class SiamLoss(v8DetectionLoss):
 
         # Bbox loss
         if fg_mask.sum():
-            # Divide target_bboxes by stride_tensor BEFORE masking
-            target_bboxes_normalized = target_bboxes / stride_tensor
-            
+            # Target bboxes are already in pixel coordinates from assigner
+            # bbox_loss expects normalized coordinates (divided by stride)
+            # Note: target_bboxes from assigner is already in pixel space, so we divide by stride
             loss_iou, loss_dfl = self.bbox_loss(
                 pred_distri,
                 pred_bboxes,
                 anchor_points,
-                target_bboxes_normalized,
+                target_bboxes / stride_tensor,  # Normalize here, not before
                 target_scores,
                 target_scores_sum,
                 fg_mask,
@@ -1032,9 +1042,9 @@ class SiamLoss(v8DetectionLoss):
             loss[0] = loss_iou
             loss[4] = loss_dfl
 
-            # Ratio-Preserving Loss
+            # Ratio-Preserving Loss (use normalized coordinates)
             fg_pred_bboxes = pred_bboxes[fg_mask]
-            fg_target_bboxes = target_bboxes_normalized[fg_mask]
+            fg_target_bboxes = (target_bboxes / stride_tensor)[fg_mask]
             if fg_pred_bboxes.numel() > 0:
                 loss[2] = self.rpl_loss(fg_pred_bboxes, fg_target_bboxes)
 
@@ -1044,7 +1054,7 @@ class SiamLoss(v8DetectionLoss):
                 # Use foreground mask targets as binary labels
                 fg_target_scores = target_scores[fg_mask].max(dim=-1)[0]  # Get max class score
                 loss[3] = self.dice_loss(fg_pred_scores.max(dim=-1)[0].unsqueeze(-1), fg_target_scores.unsqueeze(-1))
-
+        
         # Apply loss weights from the paper:
         # Loss = 7.5 * L_IoU + 0.5 * (L_BCE + L_RPL + L_DICE) + 1.5 * L_DFL
         weighted_loss = (
@@ -1055,4 +1065,5 @@ class SiamLoss(v8DetectionLoss):
             + self.w_dfl * loss[4]
         )
 
+        # Return weighted loss scaled by batch size (standard YOLO practice)
         return weighted_loss * batch_size, loss.detach()

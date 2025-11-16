@@ -1,5 +1,7 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+from __future__ import annotations
+
 import contextlib
 import pickle
 import re
@@ -9,6 +11,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
@@ -702,8 +705,36 @@ class SiamDetectionModel(DetectionModel):
             if hasattr(m, "save") and m.save:
                 features.append(x)
         return tuple(features) if len(features) >= 3 else (x, x, x)
+    
+    def _predict_with_fused_features(self, fused_features: list[torch.Tensor]) -> torch.Tensor:
+        """
+        Run detection head on fused features from matching modules.
+        
+        The fused features are extracted from layers that directly feed into the Detect head,
+        so they have the correct dimensions and can be passed directly to it.
+        
+        Args:
+            fused_features (list[torch.Tensor]): List of fused feature tensors at multiple scales.
+        
+        Returns:
+            torch.Tensor: Detection predictions from the model head.
+        """
+        # Find the detection head
+        detect_head = None
+        for m in self.model:
+            if isinstance(m, Detect):
+                detect_head = m
+                break
+        
+        if detect_head is None:
+            raise RuntimeError("No detection head found in model")
+        
+        # Pass fused features directly to detection head
+        # The features are already at the correct scale/dimension since we extracted them
+        # from the layers that normally feed into the Detect head
+        return detect_head(fused_features)
 
-    def forward(self, query_img: torch.Tensor | dict, support_img: torch.Tensor = None, augment: bool = False) -> torch.Tensor:
+    def forward(self, query_img: torch.Tensor | dict, support_img: torch.Tensor = None, augment: bool = False) -> torch.Tensor | dict:
         """
         Forward pass for Siamese detection.
 
@@ -717,7 +748,7 @@ class SiamDetectionModel(DetectionModel):
             augment (bool, optional): Enable augmentation during inference. Default: False.
 
         Returns:
-            torch.Tensor: Detection outputs from the model head.
+            torch.Tensor | dict: Detection outputs from the model head, or dict with predictions and features during training.
         """
         if isinstance(query_img, dict):
             return self.loss(query_img)
@@ -749,33 +780,110 @@ class SiamDetectionModel(DetectionModel):
                     align_corners=False
                 )
             
-            # Concatenate query and support images along batch dimension
-            # This ensures both go through identical operations and produce matching spatial dims
-            combined_imgs = torch.cat([query_img, support_img], dim=0)
+            # Extract multi-scale features from query and support images
+            # Process through backbone and extract features at P3, P4, P5 levels
+            query_multiscale_features = []
+            support_multiscale_features = []
             
-            # Process combined batch through the network
-            combined_output = super().forward(combined_imgs)
+            # Find the Detect head and identify which layers feed into it
+            detect_idx = None
+            for i, m in enumerate(self.model):
+                if isinstance(m, Detect):
+                    detect_idx = i
+                    break
             
-            # Split outputs back into query and support
-            if isinstance(combined_output, (list, tuple)):
-                # If outputs are lists/tuples, split each element
-                query_output = [out[:batch_size] if isinstance(out, torch.Tensor) else out 
-                               for out in combined_output]
-                support_output = [out[batch_size:] if isinstance(out, torch.Tensor) else out 
-                                 for out in combined_output]
-                
-                # Fuse query and support outputs (simple averaging)
-                fused_output = [
-                    (q + s) / 2.0 if isinstance(q, torch.Tensor) and isinstance(s, torch.Tensor) else q
-                    for q, s in zip(query_output, support_output)
-                ]
-                return fused_output
+            if detect_idx is None:
+                raise RuntimeError("No Detect head found in model")
+            
+            # The Detect head's m.f attribute tells us which layers it takes input from
+            detect_module = self.model[detect_idx]
+            if hasattr(detect_module, 'f') and detect_module.f != -1:
+                # m.f contains the indices of layers that feed into Detect
+                if isinstance(detect_module.f, int):
+                    target_indices = [detect_module.f]
+                else:
+                    target_indices = list(detect_module.f)
             else:
-                # Split tensor output
-                query_output = combined_output[:batch_size]
-                support_output = combined_output[batch_size:]
-                # Simple tensor fusion
-                return (query_output + support_output) / 2.0
+                # Fallback: For YOLO11 models, it's typically [16, 19, 22] out of 24 layers
+                # This is the P3, P4, P5 feature pyramid outputs
+                if detect_idx == 23:  # Standard YOLO11 architecture
+                    target_indices = [16, 19, 22]
+                else:
+                    # Generic fallback for unknown architectures
+                    target_indices = [detect_idx - 7, detect_idx - 4, detect_idx - 1]
+            
+            # Extract features by running through backbone using parent's logic (handles skip connections)
+            # Process query image
+            x_query = query_img
+            y_query = []  # outputs
+            for i, m in enumerate(self.model):
+                if m.f != -1:  # if not from previous layer
+                    x_query = y_query[m.f] if isinstance(m.f, int) else [x_query if j == -1 else y_query[j] for j in m.f]
+                x_query = m(x_query)
+                y_query.append(x_query if m.i in self.save else None)
+                
+                # Capture features at target layers
+                if i in target_indices:
+                    feat = x_query if isinstance(x_query, torch.Tensor) else x_query[0] if isinstance(x_query, (list, tuple)) else x_query
+                    query_multiscale_features.append(feat)
+                
+                # Stop before Detect head
+                if i == detect_idx - 1:
+                    break
+            
+            # Process support image
+            x_support = support_img
+            y_support = []  # outputs
+            for i, m in enumerate(self.model):
+                if m.f != -1:  # if not from previous layer
+                    x_support = y_support[m.f] if isinstance(m.f, int) else [x_support if j == -1 else y_support[j] for j in m.f]
+                x_support = m(x_support)
+                y_support.append(x_support if m.i in self.save else None)
+                
+                # Capture features at target layers
+                if i in target_indices:
+                    feat = x_support if isinstance(x_support, torch.Tensor) else x_support[0] if isinstance(x_support, (list, tuple)) else x_support
+                    support_multiscale_features.append(feat)
+                
+                # Stop before Detect head
+                if i == detect_idx - 1:
+                    break
+            
+            # Apply Matching Modules to fuse query and support features at each scale
+            fused_features = []
+            
+            if query_multiscale_features and support_multiscale_features:
+                # Ensure we have exactly 3 features (P3, P4, P5)
+                num_features = min(len(query_multiscale_features), len(support_multiscale_features), 3)
+                
+                if num_features != 3:
+                    LOGGER.warning(f"Expected 3 feature scales but got {num_features}. Query: {len(query_multiscale_features)}, Support: {len(support_multiscale_features)}")
+                
+                for i in range(num_features):
+                    q_feat = query_multiscale_features[i]
+                    s_feat = support_multiscale_features[i]
+                    
+                    # Ensure spatial dimensions match
+                    if q_feat.shape[2:] != s_feat.shape[2:]:
+                        s_feat = F.interpolate(s_feat, size=q_feat.shape[2:], mode='bilinear', align_corners=False)
+                    
+                    # Apply matching module for this scale
+                    # Output = Q + s(Q × S) × S  (biased towards query)
+                    fused = self.matching_modules[i](q_feat, s_feat)
+                    fused_features.append(fused)
+            
+            # Process fused features through detection head
+            if fused_features:
+                # Pass fused features through the detection head
+                # The detection head expects the same input as standard YOLO
+                detection_output = self._predict_with_fused_features(fused_features)
+            else:
+                # Fallback: if fusion failed, use combined batch processing
+                LOGGER.warning("Fused features not generated, falling back to combined batch processing")
+                combined_imgs = torch.cat([query_img, support_img], dim=0)
+                detection_output = super().forward(combined_imgs)
+            
+            return detection_output
         
         # Inference mode: only process query image
         return super().forward(query_img)

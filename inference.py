@@ -169,6 +169,10 @@ class SiamYOLOInference:
         Returns:
             np.ndarray: Processed detections [x1, y1, x2, y2, conf, cls]
         """
+        # Handle tuple output from Detect head (predictions, raw_features)
+        if isinstance(predictions, (list, tuple)):
+            predictions = predictions[0] if len(predictions) > 0 else predictions
+        
         # Apply NMS
         predictions = non_max_suppression(
             predictions,
@@ -178,17 +182,23 @@ class SiamYOLOInference:
             max_det=300
         )
         
-        # Process detections
-        detections = []
-        for pred in predictions:
-            if len(pred):
-                # Rescale boxes from input size to original image size
-                pred[:, :4] = ops.scale_boxes(input_shape[2:], pred[:, :4], orig_shape).round()
-                detections.append(pred.cpu().numpy())
-            else:
-                detections.append(np.empty((0, 6)))
+        # For Siamese inference, we get 2 batch elements: [query_predictions, support_predictions]
+        # We only want the query predictions (index 0)
+        if len(predictions) >= 2:
+            pred = predictions[0]
+        else:
+            pred = predictions[0] if len(predictions) > 0 else np.empty((0, 6))
         
-        return detections[0] if detections else np.empty((0, 6))
+        if len(pred):
+            # Rescale boxes from input size to original image size
+            pred[:, :4] = ops.scale_boxes(input_shape[2:], pred[:, :4], orig_shape).round()
+            # Ensure detections are above confidence threshold
+            pred = pred[pred[:, 4] >= self.conf_threshold]
+            result = pred.cpu().numpy()
+        else:
+            result = np.empty((0, 6))
+        
+        return result
     
     def visualize(self, image, detections, query_image=None):
         """
@@ -224,11 +234,11 @@ class SiamYOLOInference:
         cv2.putText(result, counter_text, (15, 35 + text_size[1]//2),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
         
-        # Add query image in top-right corner if provided (to avoid detection counter)
+        # Add query image in bottom-right corner if provided
         if query_image is not None:
-            # Resize query image to fit in corner
+            # Resize query image to fit in corner (smaller)
             query_h, query_w = query_image.shape[:2]
-            corner_size = min(150, result.shape[0] // 4, result.shape[1] // 4)
+            corner_size = min(100, result.shape[0] // 6, result.shape[1] // 6)
             scale = corner_size / max(query_h, query_w)
             new_w, new_h = int(query_w * scale), int(query_h * scale)
             query_resized = cv2.resize(query_image, (new_w, new_h))
@@ -238,21 +248,21 @@ class SiamYOLOInference:
                 query_resized, 3, 3, 3, 3, cv2.BORDER_CONSTANT, value=(0, 255, 0)
             )
             
-            # Overlay on result (top-right corner)
+            # Overlay on result (bottom-right corner)
             h, w = query_bordered.shape[:2]
             margin = 10
             x_pos = result.shape[1] - w - margin  # Right side
-            y_pos = margin  # Top
+            y_pos = result.shape[0] - h - margin  # Bottom
             result[y_pos:y_pos+h, x_pos:x_pos+w] = query_bordered
             
-            # Add "Query" label with background
-            label_text = "Query Object"
-            text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-            label_y = y_pos + h + 25
+            # Add "Query" label with background (positioned above the query image)
+            label_text = "Query"
+            text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+            label_y = y_pos - 5
             cv2.rectangle(result, (x_pos, label_y - text_size[1] - 5), 
                          (x_pos + text_size[0] + 10, label_y + 5), (0, 0, 0), -1)
             cv2.putText(result, label_text, (x_pos + 5, label_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
         return result
     

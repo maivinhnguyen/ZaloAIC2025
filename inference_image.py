@@ -131,6 +131,10 @@ class SiamYOLOImageInference:
     
     def postprocess(self, predictions, orig_shape, input_shape):
         """Post-process model predictions."""
+        # Handle tuple output from Detect head (predictions, raw_features)
+        if isinstance(predictions, (list, tuple)):
+            predictions = predictions[0] if len(predictions) > 0 else predictions
+        
         predictions = non_max_suppression(
             predictions,
             conf_thres=self.conf_threshold,
@@ -139,15 +143,22 @@ class SiamYOLOImageInference:
             max_det=300
         )
         
-        detections = []
-        for pred in predictions:
-            if len(pred):
-                pred[:, :4] = ops.scale_boxes(input_shape[2:], pred[:, :4], orig_shape).round()
-                detections.append(pred.cpu().numpy())
-            else:
-                detections.append(np.empty((0, 6)))
+        # For Siamese inference, we get 2 batch elements: [query_predictions, support_predictions]
+        # We only want the query predictions (index 0)
+        if len(predictions) >= 2:
+            pred = predictions[0]
+        else:
+            pred = predictions[0] if len(predictions) > 0 else np.empty((0, 6))
         
-        return detections[0] if detections else np.empty((0, 6))
+        if len(pred):
+            pred[:, :4] = ops.scale_boxes(input_shape[2:], pred[:, :4], orig_shape).round()
+            # Ensure detections are above confidence threshold
+            pred = pred[pred[:, 4] >= self.conf_threshold]
+            result = pred.cpu().numpy()
+        else:
+            result = np.empty((0, 6))
+        
+        return result
     
     def visualize(self, image, detections, query_image=None):
         """Visualize detections on image."""
@@ -172,10 +183,10 @@ class SiamYOLOImageInference:
         cv2.putText(result, counter_text, (15, 35 + text_size[1]//2),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
         
-        # Add query image in top-right corner (to avoid detection counter)
+        # Add query image in bottom-right corner (to avoid detection counter)
         if query_image is not None:
             query_h, query_w = query_image.shape[:2]
-            corner_size = min(150, result.shape[0] // 4, result.shape[1] // 4)
+            corner_size = min(100, result.shape[0] // 6, result.shape[1] // 6)
             scale = corner_size / max(query_h, query_w)
             new_w, new_h = int(query_w * scale), int(query_h * scale)
             query_resized = cv2.resize(query_image, (new_w, new_h))
@@ -185,25 +196,25 @@ class SiamYOLOImageInference:
                 query_resized, 3, 3, 3, 3, cv2.BORDER_CONSTANT, value=(0, 255, 0)
             )
             
-            # Overlay on result (top-right corner)
+            # Overlay on result (bottom-right corner)
             h, w = query_bordered.shape[:2]
             margin = 10
             x_pos = result.shape[1] - w - margin  # Right side
-            y_pos = margin  # Top
+            y_pos = result.shape[0] - h - margin  # Bottom
             result[y_pos:y_pos+h, x_pos:x_pos+w] = query_bordered
             
-            # Add "Query" label with background
-            label_text = "Query Object"
-            text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-            label_y = y_pos + h + 25
+            # Add "Query" label with background (positioned above the query image)
+            label_text = "Query"
+            text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+            label_y = y_pos - 5
             cv2.rectangle(result, (x_pos, label_y - text_size[1] - 5), 
                          (x_pos + text_size[0] + 10, label_y + 5), (0, 0, 0), -1)
             cv2.putText(result, label_text, (x_pos + 5, label_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
         return result
     
-    def process_image(self, query_image_path, image_path, output_dir):
+    def process_image(self, query_image_paths, image_path, output_dir):
         """
         Process a single image with Siamese YOLO detection.
         
@@ -215,13 +226,32 @@ class SiamYOLOImageInference:
         Returns:
             int: Number of detections
         """
-        # Load query image (cache it)
+        # Load all support images and average features
         if not hasattr(self, '_query_tensor'):
-            LOGGER.info(f"Loading query image from {query_image_path}")
-            self.query_image = cv2.imread(str(query_image_path))
-            if self.query_image is None:
-                raise ValueError(f"Could not load query image: {query_image_path}")
-            self._query_tensor, _ = self.preprocess_image(self.query_image)
+            if isinstance(query_image_paths, (list, tuple)):
+                support_tensors = []
+                support_images = []
+                for qpath in query_image_paths:
+                    img = cv2.imread(str(qpath))
+                    if img is None:
+                        raise ValueError(f"Could not load query image: {qpath}")
+                    tensor, _ = self.preprocess_image(img)
+                    support_tensors.append(tensor)
+                    support_images.append(img)
+                # Stack and average features
+                support_tensors = torch.cat(support_tensors, dim=0)  # shape: (N, C, H, W)
+                # Extract features for each support image
+                with torch.no_grad():
+                    features = self.model.extract_support_features(support_tensors)
+                avg_feature = features.mean(dim=0, keepdim=True)  # shape: (1, C, H, W)
+                self._query_tensor = avg_feature
+                self.query_image = support_images[0]  # For visualization, just use the first
+            else:
+                LOGGER.info(f"Loading query image from {query_image_paths}")
+                self.query_image = cv2.imread(str(query_image_paths))
+                if self.query_image is None:
+                    raise ValueError(f"Could not load query image: {query_image_paths}")
+                self._query_tensor, _ = self.preprocess_image(self.query_image)
         
         # Load test image
         image = cv2.imread(str(image_path))
@@ -253,7 +283,7 @@ class SiamYOLOImageInference:
         
         return num_dets
     
-    def process_folder(self, query_image_path, source_path, output_dir):
+    def process_folder(self, query_image_paths, source_path, output_dir):
         """
         Process folder of images with Siamese YOLO detection.
         
@@ -288,7 +318,7 @@ class SiamYOLOImageInference:
         total_detections = 0
         images_with_detections = 0
         for image_path in tqdm(image_paths, desc="Processing images"):
-            detections = self.process_image(query_image_path, image_path, output_dir)
+            detections = self.process_image(query_image_paths, image_path, output_dir)
             total_detections += detections
             if detections > 0:
                 images_with_detections += 1

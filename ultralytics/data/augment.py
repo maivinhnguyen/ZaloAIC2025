@@ -1049,7 +1049,8 @@ class CutMix(BaseMixTransform):
         labels2 = labels.pop("mix_labels")[0]
         area = cut_areas[np.random.choice(idx)]  # randomly select one
         ioa2 = bbox_ioa(area[None], labels2["instances"].bboxes).squeeze(0)
-        indexes2 = np.nonzero(ioa2 >= (0.01 if len(labels["instances"].segments) else 0.1))[0]
+        segments = labels["instances"].segments
+        indexes2 = np.nonzero(ioa2 >= (0.01 if segments is not None and len(segments) else 0.1))[0]
         if len(indexes2) == 0:
             return labels
 
@@ -1368,7 +1369,7 @@ class RandomPerspective:
         segments = instances.segments
         keypoints = instances.keypoints
         # Update bboxes if there are segments.
-        if len(segments):
+        if segments is not None and len(segments):
             bboxes, segments = self.apply_segments(segments, M)
 
         if keypoints is not None:
@@ -1381,7 +1382,7 @@ class RandomPerspective:
         instances.scale(scale_w=scale, scale_h=scale, bbox_only=True)
         # Make the bboxes have the same scale with new_bboxes
         i = self.box_candidates(
-            box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.10
+            box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if segments is not None and len(segments) else 0.10
         )
         labels["instances"] = new_instances[i]
         labels["cls"] = cls[i]
@@ -1834,7 +1835,8 @@ class CopyPaste(BaseMixTransform):
 
     def __call__(self, labels: dict[str, Any]) -> dict[str, Any]:
         """Apply Copy-Paste augmentation to an image and its labels."""
-        if len(labels["instances"].segments) == 0 or self.p == 0:
+        segments = labels["instances"].segments
+        if segments is None or len(segments) == 0 or self.p == 0:
             return labels
         if self.mode == "flip":
             return self._transform(labels)
@@ -2236,8 +2238,9 @@ class Format:
                 labels["keypoints"][..., 0] /= w
                 labels["keypoints"][..., 1] /= h
         if self.return_obb:
+            segments = instances.segments
             labels["bboxes"] = (
-                xyxyxyxy2xywhr(torch.from_numpy(instances.segments)) if len(instances.segments) else torch.zeros((0, 5))
+                xyxyxyxy2xywhr(torch.from_numpy(segments)) if segments is not None and len(segments) else torch.zeros((0, 5))
             )
         # NOTE: need to normalize obb in xywhr format for width-height consistency
         if self.normalize:

@@ -746,6 +746,15 @@ def plot_images(
     masks = labels.get("masks", np.zeros(0, dtype=np.uint8))
     kpts = labels.get("keypoints", np.zeros(0, dtype=np.float32))
     images = labels.get("img", images)  # default to input images
+    
+    # Debug output
+    import os
+    debug_plot = os.environ.get('SIAM_DEBUG', '').lower() == 'true'
+    if debug_plot:
+        print(f"[plot_images] cls shape: {cls.shape}, bboxes shape: {bboxes.shape}")
+        print(f"[plot_images] batch_idx shape: {batch_idx.shape}")
+        if len(bboxes) > 0:
+            print(f"[plot_images] first bbox: {bboxes[0]}, max value: {bboxes.max():.4f}")
 
     if len(images) and isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
@@ -792,14 +801,21 @@ def plot_images(
             labels = confs is None
             conf = confs[idx] if confs is not None else None  # check for confidence presence (label vs pred)
 
+            if debug_plot:
+                print(f"[plot_images] Image {i}: idx sum={idx.sum()}, classes shape: {classes.shape}")
+
             if len(bboxes):
                 boxes = bboxes[idx]
                 if len(boxes):
+                    if debug_plot:
+                        print(f"[plot_images] Image {i}: boxes before scaling: {boxes[:2]}")
                     if boxes[:, :4].max() <= 1.1:  # if normalized with tolerance 0.1
                         boxes[..., [0, 2]] *= w  # scale to pixels
                         boxes[..., [1, 3]] *= h
                     elif scale < 1:  # absolute coords need scale if image scales
                         boxes[..., :4] *= scale
+                    if debug_plot:
+                        print(f"[plot_images] Image {i}: boxes after scaling: {boxes[:2]}")
                     is_obb = boxes.shape[-1] == 5  # xywhr
                     # Convert to xyxy format BEFORE adding offset
                     boxes = ops.xywhr2xyxyxyxy(boxes) if is_obb else ops.xywh2xyxy(boxes)

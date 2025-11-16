@@ -167,8 +167,15 @@ class YOLODataset(BaseDataset):
             "numpy": np.random.get_state(),
             "torch": torch.get_rng_state(),
         }
-        if torch.cuda.is_available():
-            state["cuda"] = torch.cuda.get_rng_state_all()
+        # Important: In DataLoader worker processes on Linux the start method is often 'fork'.
+        # Calling CUDA APIs in a forked subprocess before CUDA is initialized will error.
+        # Guard with is_initialized() to avoid lazy-initializing CUDA in workers.
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            try:
+                state["cuda"] = torch.cuda.get_rng_state_all()
+            except Exception:
+                # Skip capturing CUDA RNG state if it is unsafe in this process context.
+                pass
         return state
 
     @staticmethod
@@ -177,8 +184,12 @@ class YOLODataset(BaseDataset):
         random.setstate(state["python"])
         np.random.set_state(state["numpy"])
         torch.set_rng_state(state["torch"])
-        if "cuda" in state and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(state["cuda"])
+        if "cuda" in state and torch.cuda.is_available() and torch.cuda.is_initialized():
+            try:
+                torch.cuda.set_rng_state_all(state["cuda"])
+            except Exception:
+                # If CUDA can't be safely set in this process, continue without failing.
+                pass
 
     def _resolve_dataset_path(self, path_value: str | Path, dataset_root: Path | None = None) -> Path:
         """Resolve dataset-relative paths to absolute paths."""
@@ -268,7 +279,6 @@ class YOLODataset(BaseDataset):
                 lb["segments"] = []
         if len_cls == 0:
             LOGGER.warning(f"Labels are missing or empty in {cache_path}, training may not work correctly. {HELP_URL}")
-        print(f"Debug: Loaded labels: {labels}")  # Debugging print
         return labels
 
     def build_transforms(self, hyp: dict | None = None) -> Compose:
@@ -987,6 +997,108 @@ class SiamDataset(YOLODataset):
         self.transform_seed = None
         self.dataset_root = None
         super().__init__(*args, data=data, task=task, **kwargs)
+    
+    def build_transforms(self, hyp: dict | None = None) -> Compose:
+        """
+        Build transforms for SiamDataset with custom Siamese-aware Mosaic.
+        
+        Uses SiameseMosaic which respects query-support pairing and only includes
+        labels from images matching the base object category (hard negative mining).
+        
+        Standard Mosaic/MixUp/CopyPaste are disabled because they break the
+        1:1 query-support pairing requirement of Siamese learning.
+        
+        Args:
+            hyp (dict, optional): Hyperparameters for transforms.
+            
+        Returns:
+            (Compose): Composed transforms with Siamese-aware augmentations.
+        """
+        # Get mosaic probability before modifying hyp
+        mosaic_prob = 0.0
+        if hyp is not None:
+            mosaic_prob = getattr(hyp, 'mosaic', 0.0)
+            # Force disable standard mixing augmentations
+            hyp.mosaic = 0.0
+            hyp.mixup = 0.0
+            hyp.copy_paste = 0.0
+            if hasattr(hyp, 'cutmix'):
+                hyp.cutmix = 0.0
+        
+        # Build base transforms
+        transforms = super().build_transforms(hyp)
+
+        # Instantiate DistractorCopyPaste early so it can be injected into the Mosaic
+        distractor_tf = None
+        if self.augment:
+            try:
+                from ultralytics.data.siam_augment import DistractorCopyPaste
+                from pathlib import Path
+
+                dp_p = getattr(hyp, "distractor_p", 0.5) if hyp is not None else 0.5
+                dp_min = getattr(hyp, "distractor_min", 2) if hyp is not None else 2
+                dp_max = getattr(hyp, "distractor_max", 4) if hyp is not None else 4
+                dp_size = getattr(hyp, "distractor_size_range", (0.05, 0.10)) if hyp is not None else (0.05, 0.10)
+                dp_retries = getattr(hyp, "distractor_max_retries", 10) if hyp is not None else 10
+
+                default_support = Path(
+                    "/mlcv2/WorkingSpace/Personal/nguyenmv/ZaloAI/Repo/maibel/ZaloAIC2025/copy_paste/support"
+                )
+                if default_support.exists() and default_support.is_dir():
+                    folder_arg = str(default_support)
+                else:
+                    folder_arg = str(getattr(self, "dataset_root", self.img_path))
+
+                distractor_tf = DistractorCopyPaste(
+                    dataset=self,
+                    folder=folder_arg,
+                    p=dp_p,
+                    min_paste=dp_min,
+                    max_paste=dp_max,
+                    size_range=dp_size,
+                    max_retries=dp_retries,
+                )
+            except Exception:
+                distractor_tf = None
+
+        # Add Siamese-aware mosaic if enabled. If a distractor transform was created
+        # inject it into the mosaic so distractors are applied to source images
+        if mosaic_prob > 0.0 and self.augment:
+            from ultralytics.data.siam_augment import SiameseMosaic
+
+            # Insert SiameseMosaic at the beginning of pre_transform
+            siam_mosaic = SiameseMosaic(
+                dataset=self,
+                imgsz=self.imgsz,
+                p=mosaic_prob,
+                distractor_handler=distractor_tf,
+            )
+
+            # Inject into transform pipeline
+            if hasattr(transforms, 'transforms'):
+                # Find and replace or prepend
+                transforms.transforms.insert(0, siam_mosaic)
+
+        # If a distractor transform was created earlier, insert it into the pipeline
+        # only when Mosaic is not active. When Mosaic is used we already inject the
+        # handler into `SiameseMosaic` so an additional insertion would duplicate work.
+        if self.augment and distractor_tf is not None:
+            try:
+                if mosaic_prob <= 0.0:
+                    inserted = False
+                    if hasattr(transforms, 'transforms'):
+                        for idx, t in enumerate(transforms.transforms):
+                            if t.__class__.__name__ == 'Format':
+                                transforms.transforms.insert(idx, distractor_tf)
+                                inserted = True
+                                break
+                    if not inserted:
+                        transforms.append(distractor_tf)
+            except Exception:
+                # If something goes wrong inserting the transform, continue silently.
+                pass
+        
+        return transforms
 
     def get_labels(self) -> list[dict]:
         """
@@ -1113,25 +1225,27 @@ class SiamDataset(YOLODataset):
                     
                     for idx in range(1, len(parts)):
                         part = parts[idx]
-                        # Check if this looks like a file path (has / or \ or file extension)
-                        if '/' in part or '\\' in part or '.' in part:
-                            support_paths.append(part)
-                            bbox_start_idx = idx + 1
-                        else:
-                            # Try to parse as float - if successful, we've reached bbox data
-                            try:
-                                float(part)
-                                bbox_start_idx = idx
-                                break
-                            except ValueError:
-                                # Not a number, might be another path
+                        # Try to parse as float FIRST - if successful, we've reached bbox data
+                        try:
+                            float(part)
+                            bbox_start_idx = idx
+                            break
+                        except ValueError:
+                            # Not a number - check if it looks like a file path (has / or \)
+                            if '/' in part or '\\' in part:
+                                support_paths.append(part)
+                                bbox_start_idx = idx + 1
+                            else:
+                                # Assume it's a path component (even without clear indicators)
                                 support_paths.append(part)
                                 bbox_start_idx = idx + 1
                     
-                    # Use only the first support image
+                    # Randomly select one support image from available references
                     support_path = None
-                    if support_paths and support_paths[0].lower() not in {"", "none", "null"}:
-                        candidate_support = self._resolve_dataset_path(support_paths[0], dataset_root)
+                    valid_supports = [sp for sp in support_paths if sp.lower() not in {"", "none", "null"}]
+                    if valid_supports:
+                        chosen_support = random.choice(valid_supports)
+                        candidate_support = self._resolve_dataset_path(chosen_support, dataset_root)
                         if candidate_support.exists():
                             support_path = candidate_support
                         else:
@@ -1283,10 +1397,18 @@ class SiamDataset(YOLODataset):
         support_label["ratio_pad"] = (1.0, 1.0)
         
         # IMPORTANT: Clear labels from support image (support has no boxes, only query does)
+        # Replace the instances object with an empty one (no bboxes, segments, or keypoints)
+        empty_bboxes = np.zeros((0, 4), dtype=np.float32)
+        empty_segments = np.zeros((0, 1000, 2), dtype=np.float32)  # Match format from update_labels_info
+        support_label["instances"] = Instances(
+            bboxes=empty_bboxes,
+            segments=empty_segments,
+            keypoints=None,
+            bbox_format=label["instances"]._bboxes.format,
+            normalized=label["instances"].normalized
+        )
+        # Also clear the cls label for support image
         support_label["cls"] = np.zeros((0, 1), dtype=np.float32)
-        support_label["bboxes"] = np.zeros((0, 4), dtype=np.float32)
-        support_label["segments"] = []
-        support_label["keypoints"] = None
 
         if self.transforms:
             rng_state_before = self._capture_rng_state()

@@ -1,0 +1,132 @@
+1) List tracked paths containing "dataset" (case-insensitive)
+docs/en/datasets/classify/caltech101.md
+docs/en/datasets/classify/caltech256.md
+docs/en/datasets/classify/cifar10.md
+docs/en/datasets/classify/cifar100.md
+docs/en/datasets/classify/fashion-mnist.md
+docs/en/datasets/classify/imagenet.md
+docs/en/datasets/classify/imagenet10.md
+docs/en/datasets/classify/imagenette.md
+docs/en/datasets/classify/imagewoof.md
+docs/en/datasets/classify/index.md
+docs/en/datasets/classify/mnist.md
+docs/en/datasets/detect/african-wildlife.md
+docs/en/datasets/detect/argoverse.md
+docs/en/datasets/detect/brain-tumor.md
+docs/en/datasets/detect/coco.md
+docs/en/datasets/detect/coco128.md
+docs/en/datasets/detect/coco8-grayscale.md
+docs/en/datasets/detect/coco8-multispectral.md
+docs/en/datasets/detect/coco8.md
+docs/en/datasets/detect/construction-ppe.md
+docs/en/datasets/detect/globalwheat2020.md
+docs/en/datasets/detect/homeobjects-3k.md
+docs/en/datasets/detect/index.md
+docs/en/datasets/detect/lvis.md
+docs/en/datasets/detect/medical-pills.md
+docs/en/datasets/detect/objects365.md
+docs/en/datasets/detect/open-images-v7.md
+docs/en/datasets/detect/roboflow-100.md
+docs/en/datasets/detect/signature.md
+docs/en/datasets/detect/sku-110k.md
+docs/en/datasets/detect/visdrone.md
+docs/en/datasets/detect/voc.md
+docs/en/datasets/detect/xview.md
+docs/en/datasets/explorer/api.md
+docs/en/datasets/explorer/dashboard.md
+docs/en/datasets/explorer/explorer.md
+docs/en/datasets/explorer/index.md
+docs/en/datasets/index.md
+docs/en/datasets/obb/dota-v2.md
+docs/en/datasets/obb/dota8.md
+docs/en/datasets/obb/index.md
+docs/en/datasets/pose/coco.md
+docs/en/datasets/pose/coco8-pose.md
+docs/en/datasets/pose/dog-pose.md
+docs/en/datasets/pose/hand-keypoints.md
+docs/en/datasets/pose/index.md
+docs/en/datasets/pose/tiger-pose.md
+docs/en/datasets/segment/carparts-seg.md
+docs/en/datasets/segment/coco.md
+docs/en/datasets/segment/coco128-seg.md
+docs/en/datasets/segment/coco8-seg.md
+docs/en/datasets/segment/crack-seg.md
+docs/en/datasets/segment/index.md
+docs/en/datasets/segment/package-seg.md
+docs/en/datasets/track/index.md
+docs/en/hub/datasets.md
+docs/en/reference/data/dataset.md
+generate_synthetic_dataset.py
+merge_datasets.py
+run_merge_datasets.sh
+ultralytics/cfg/datasets/Argoverse.yaml
+ultralytics/cfg/datasets/DOTAv1.5.yaml
+ultralytics/cfg/datasets/DOTAv1.yaml
+ultralytics/cfg/datasets/GlobalWheat2020.yaml
+ultralytics/cfg/datasets/HomeObjects-3K.yaml
+ultralytics/cfg/datasets/ImageNet.yaml
+ultralytics/cfg/datasets/Objects365.yaml
+ultralytics/cfg/datasets/SKU-110K.yaml
+ultralytics/cfg/datasets/VOC.yaml
+ultralytics/cfg/datasets/VisDrone.yaml
+ultralytics/cfg/datasets/african-wildlife.yaml
+ultralytics/cfg/datasets/brain-tumor.yaml
+ultralytics/cfg/datasets/carparts-seg.yaml
+ultralytics/cfg/datasets/coco-pose.yaml
+ultralytics/cfg/datasets/coco.yaml
+ultralytics/cfg/datasets/coco128-seg.yaml
+ultralytics/cfg/datasets/coco128.yaml
+ultralytics/cfg/datasets/coco8-grayscale.yaml
+ultralytics/cfg/datasets/coco8-multispectral.yaml
+ultralytics/cfg/datasets/coco8-pose.yaml
+ultralytics/cfg/datasets/coco8-seg.yaml
+ultralytics/cfg/datasets/coco8.yaml
+ultralytics/cfg/datasets/construction-ppe.yaml
+ultralytics/cfg/datasets/crack-seg.yaml
+ultralytics/cfg/datasets/dog-pose.yaml
+ultralytics/cfg/datasets/dota8-multispectral.yaml
+ultralytics/cfg/datasets/dota8.yaml
+ultralytics/cfg/datasets/hand-keypoints.yaml
+ultralytics/cfg/datasets/lvis.yaml
+ultralytics/cfg/datasets/medical-pills.yaml
+ultralytics/cfg/datasets/open-images-v7.yaml
+ultralytics/cfg/datasets/package-seg.yaml
+ultralytics/cfg/datasets/signature.yaml
+ultralytics/cfg/datasets/tiger-pose.yaml
+ultralytics/cfg/datasets/xView.yaml
+ultralytics/data/dataset.py
+validate_dataset.py
+validate_synthetic_dataset.py
+
+2) Unique candidate directories (from those tracked paths):
+  .
+  docs/en/datasets
+  docs/en/datasets/classify
+  docs/en/datasets/detect
+  docs/en/datasets/explorer
+  docs/en/datasets/obb
+  docs/en/datasets/pose
+  docs/en/datasets/segment
+  docs/en/datasets/track
+  docs/en/hub
+  docs/en/reference/data
+  ultralytics/cfg/datasets
+  ultralytics/data
+
+3) Filtering to actual directories on disk that will be untracked:
+  .
+  docs/en/datasets
+  docs/en/datasets/classify
+  docs/en/datasets/detect
+  docs/en/datasets/explorer
+  docs/en/datasets/obb
+  docs/en/datasets/pose
+  docs/en/datasets/segment
+  docs/en/datasets/track
+  docs/en/hub
+  docs/en/reference/data
+  ultralytics/cfg/datasets
+  ultralytics/data
+
+4) Untracking these directories from git index (files remain locally):
+  git rm -r --cached '.'
